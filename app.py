@@ -8,6 +8,7 @@ import pandas as pd
 import io
 import calendar
 import plotly.graph_objects as go
+import streamlit.components.v1 as components
 
 # --- 1. DATABÁZE (SQLite) ---
 def init_db():
@@ -125,11 +126,12 @@ st.markdown("""
 
 st.title("📈 Můj AI Obchodní Deník")
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "➕ Nový obchod & AI", 
     "🔍 Historie obchodů", 
     "💼 Správa účtů", 
-    "📊 Dashboard & Kalendář"
+    "📊 Dashboard & Kalendář",
+    "🌍 Ekonomický kalendář"
 ])
 
 # ==========================================
@@ -780,3 +782,31 @@ with tab4:
                 st.info(f"Pro den {selected_detail_date.strftime('%d.%m.%Y')} nebyly zapsány žádné obchody.")
         else:
             st.info("Zatím nejsou zapsané žádné obchody pro tento účet.")
+
+# ==========================================
+# ZÁLOŽKA 5: Ekonomický kalendář (CZ + Místní čas)
+# ==========================================
+with tab5:
+    st.subheader("🌍 Živý ekonomický kalendář")
+    st.write("Přehled makroekonomických zpráv v češtině, přizpůsobený na tvůj místní čas (Evropa/Praha).")
+    
+    # HTML a JS widget s nastavením na češtinu ('cs') a pražskou časovou zónu ('Europe/Prague')
+    calendar_html = """
+    <div class="tradingview-widget-container">
+      <div class="tradingview-widget-container__widget"></div>
+      <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-events.js" async>
+      {
+      "colorTheme": "dark",
+      "isTransparent": true,
+      "width": "100%",
+      "height": "650",
+      "locale": "cs",
+      "importanceFilter": "-1,0,1",
+      "currencyFilter": "USD,EUR,GBP,JPY,AUD,CAD,CHF,NZD",
+      "timezone": "Europe/Prague"
+    }
+      </script>
+    </div>
+    """
+    
+    components.html(calendar_html, height=670)
