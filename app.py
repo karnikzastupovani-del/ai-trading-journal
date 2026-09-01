@@ -8,6 +8,7 @@ import pandas as pd
 import io
 import calendar
 import plotly.graph_objects as go
+import plotly.express as px
 import streamlit.components.v1 as components
 
 # --- 1. DATABÁZE (SQLite) ---
@@ -52,8 +53,14 @@ def init_db():
         );
     ''')
     
+    # Bezpečné rozšíření stávající databáze o nové sloupce (pokud ještě neexistují)
     try:
         cursor.execute("ALTER TABLE trades ADD COLUMN account_id INTEGER;")
+    except sqlite3.OperationalError:
+        pass
+        
+    try:
+        cursor.execute("ALTER TABLE trades ADD COLUMN inverted_chart BOOLEAN DEFAULT 0;")
     except sqlite3.OperationalError:
         pass
         
@@ -135,9 +142,25 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 ])
 
 # ==========================================
-# ZÁLOŽKA 1: Nový obchod & AI analýza
+# ZÁLOŽKA 1: Nový obchod, AI & Kalkulačka
 # ==========================================
 with tab1:
+    
+    with st.expander("🧮 Kalkulačka velikosti pozice (Risk Management)"):
+        c_col1, c_col2, c_col3 = st.columns(3)
+        with c_col1:
+            calc_acc_bal = st.number_input("Zůstatek na účtu ($)", value=200000.0, step=1000.0)
+        with c_col2:
+            calc_risk_pct = st.number_input("Risk na obchod (%)", value=1.0, step=0.1)
+        with c_col3:
+            calc_sl_pips = st.number_input("Velikost Stop Lossu (pips)", value=10.0, step=1.0)
+        
+        risk_amt = calc_acc_bal * (calc_risk_pct / 100)
+        if calc_sl_pips > 0:
+            calc_lots = risk_amt / (calc_sl_pips * 10)  # Kalkulace pro standardní páry USD
+            st.info(f"🛡️ **Riskovaná částka:** `${risk_amt:,.2f}` | 📉 **Doporučená velikost pozice (odhad na 10$/pip):** `{calc_lots:.2f} Lotů`")
+    
+    st.markdown("---")
     st.write("Nahraj screenshot grafu, nechej AI vyhodnotit checklist a ulož obchod na vybraný účet.")
     
     conn = sqlite3.connect('trading_journal.db')
@@ -208,6 +231,9 @@ with tab1:
             signature_check = st.checkbox("Signature search (MB1 -> Flush -> MB2)", value=data.get("signature_entry", False))
             zone_check = st.checkbox("Zone qualification (Fresh & Swept liquidity)", value=data.get("zone_qualified", False))
             
+            st.markdown("---")
+            inverted_chart_check = st.checkbox("🔄 Inverted chart setup (Byl analyzován přes obrácený graf?)", value=False)
+            
             notes = st.text_area("Psychologie a poznámky k obchodu", value="Vše podle plánu.")
             
             submit_button = st.form_submit_button(label="💾 Uložit obchod do zvoleného účtu")
@@ -219,12 +245,12 @@ with tab1:
                     INSERT INTO trades (
                         account_id, ticker, direction, entry_time, actual_r, pnl_amount,
                         htf_generals_check, market_phase, engine_ma_fan, 
-                        signature_entry, fresh_zone, notes_emotions, image_data
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     selected_acc_id, ticker, direction, datetime.now().strftime("%Y-%m-%d %H:%M"), 
                     actual_r, pnl, htf_check, market_phase, engine_check, signature_check, 
-                    zone_check, notes, st.session_state.saved_image_bytes
+                    zone_check, notes, st.session_state.saved_image_bytes, inverted_chart_check
                 ))
                 conn.commit()
                 conn.close()
@@ -241,7 +267,7 @@ with tab2:
     cursor.execute('''
         SELECT t.id, a.name, a.initial_balance, t.ticker, t.direction, t.entry_time, t.actual_r, t.pnl_amount, 
                t.htf_generals_check, t.market_phase, t.engine_ma_fan, 
-               t.signature_entry, t.fresh_zone, t.notes_emotions, t.image_data, t.account_id 
+               t.signature_entry, t.fresh_zone, t.notes_emotions, t.image_data, t.account_id, t.inverted_chart 
         FROM trades t
         LEFT JOIN accounts a ON t.account_id = a.id
         ORDER BY t.id DESC
@@ -264,8 +290,9 @@ with tab2:
         st.markdown("---")
         
         for t in filtered_trades:
+            # Rozbalení rozšířených hodnot
             (t_id, t_acc_name, t_acc_init, t_ticker, t_dir, t_time, t_r, t_pnl, 
-             t_htf, t_phase, t_eng, t_sig, t_zone, t_notes, t_img, t_acc_id) = t
+             t_htf, t_phase, t_eng, t_sig, t_zone, t_notes, t_img, t_acc_id, t_inv) = t
             
             clean_acc_name = str(t_acc_name).strip() if t_acc_name else "Neznámý účet"
             init_b = t_acc_init if t_acc_init and t_acc_init > 0 else 200000.0
@@ -306,6 +333,7 @@ with tab2:
                     st.write(f"- Engine MA Fan (5/10/20): {'✅ Splněno' if t_eng else '❌ Nesplněno'}")
                     st.write(f"- Signature (MB1 -> Flush -> MB2): {'✅ Splněno' if t_sig else '❌ Nesplněno'}")
                     st.write(f"- Kvalifikace zóny: {'✅ Splněno' if t_zone else '❌ Nesplněno'}")
+                    st.write(f"- Inverted Chart: {'✅ Použito' if t_inv else '❌ Běžný graf'}")
                     
                     st.markdown("### 🧠 Poznámky a emoce")
                     st.info(t_notes if t_notes else "Žádné poznámky nebyly zadány.")
@@ -444,12 +472,12 @@ with tab4:
         
         conn_d = sqlite3.connect('trading_journal.db')
         dash_trades = pd.read_sql_query(
-            "SELECT id, ticker, direction, entry_time, actual_r, pnl_amount, htf_generals_check, market_phase, engine_ma_fan, signature_entry, fresh_zone, notes_emotions, image_data FROM trades WHERE account_id = ? ORDER BY id ASC", 
+            "SELECT id, ticker, direction, entry_time, actual_r, pnl_amount, htf_generals_check, market_phase, engine_ma_fan, signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart FROM trades WHERE account_id = ? ORDER BY id ASC", 
             conn_d, params=(selected_acc_id,)
         )
         if dash_trades.empty:
             fallback_query = '''
-                SELECT t.id, t.ticker, t.direction, t.entry_time, t.actual_r, t.pnl_amount, t.htf_generals_check, t.market_phase, t.engine_ma_fan, t.signature_entry, t.fresh_zone, t.notes_emotions, t.image_data 
+                SELECT t.id, t.ticker, t.direction, t.entry_time, t.actual_r, t.pnl_amount, t.htf_generals_check, t.market_phase, t.engine_ma_fan, t.signature_entry, t.fresh_zone, t.notes_emotions, t.image_data, t.inverted_chart 
                 FROM trades t
                 LEFT JOIN accounts a ON t.account_id = a.id
                 WHERE TRIM(a.name) = ? ORDER BY t.id ASC
@@ -528,11 +556,68 @@ with tab4:
             
         st.markdown("---")
         
+        # --- POKROČILÉ GRAFY (Win-rate podle Párů a Směru) ---
+        if total_trades > 0:
+            st.markdown("### 🎯 Detailní Win-Rate a rozložení obchodů")
+            graph_c1, graph_c2 = st.columns(2)
+            
+            with graph_c1:
+                # Výpočet Win-rate podle Tickerů
+                pair_stats = dash_trades.groupby('ticker').apply(
+                    lambda x: pd.Series({'Wins': (x['pnl_amount'] > 0).sum(), 'Losses': (x['pnl_amount'] <= 0).sum()})
+                ).reset_index()
+                
+                fig_pairs = px.bar(
+                    pair_stats, x='ticker', y=['Wins', 'Losses'], 
+                    title="Výhry a Prohry podle Párů", 
+                    barmode='group',
+                    color_discrete_map={'Wins': '#2ea043', 'Losses': '#da3633'}
+                )
+                fig_pairs.update_layout(template='plotly_dark', margin=dict(l=20, r=20, t=40, b=20))
+                st.plotly_chart(fig_pairs, use_container_width=True)
+                
+            with graph_c2:
+                # Rozložení Long vs Short a Inverted
+                dir_stats = dash_trades.groupby('direction')['id'].count().reset_index()
+                fig_dir = go.Figure(data=[go.Pie(
+                    labels=dir_stats['direction'], 
+                    values=dir_stats['id'], 
+                    hole=.4, 
+                    marker_colors=['#2ea043' if d=='Long' else '#da3633' for d in dir_stats['direction']]
+                )])
+                fig_dir.update_layout(title="Rozložení Směru Obchodů (Long vs Short)", template='plotly_dark', margin=dict(l=20, r=20, t=40, b=20))
+                st.plotly_chart(fig_dir, use_container_width=True)
+                
+        st.markdown("---")
+
+        # --- AI TRADING KOUČ ---
+        st.markdown("### 🤖 AI Trading Kouč (Zhodnocení obchodování)")
+        if st.button("Zhodnotit moje statistiky pomocí AI"):
+            if model and total_trades > 0:
+                with st.spinner("AI analyzuje tvá data a hledá klíčové patterny pro vylepšení..."):
+                    recent_trades = dash_trades.tail(20) # Posledních 20 obchodů kvůli limitům AI
+                    data_str = recent_trades[['ticker', 'direction', 'actual_r', 'pnl_amount', 'htf_generals_check', 'engine_ma_fan', 'inverted_chart']].to_json(orient='records')
+                    
+                    prompt_coach = f"""
+                    Jsi profesionální trading kouč zaměřený na strategii MentFX. Analyzuj těchto posledních pár obchodů klienta (data v JSON: {data_str}).
+                    Tvůj úkol:
+                    1. Dej mu stručnou, údernou a motivační zpětnou vazbu v češtině.
+                    2. Vypíchni, co funguje dobře (např. dodržování pravidel jako MA fan).
+                    3. Upozorni na to, kde ztrácí (jaké páry, jestli u long/short, nebo když nedodrží checklist).
+                    4. Zhodnoť také vliv použití 'inverted_chart' (obráceného grafu), pokud ho využívá.
+                    Max 3-4 odstavce.
+                    """
+                    try:
+                        resp = model.generate_content(prompt_coach)
+                        st.info(resp.text)
+                    except Exception as e:
+                        st.error(f"Chyba při komunikaci s AI: {e}")
+            else:
+                st.warning("Potřebuješ alespoň 1 uložený obchod a nastavený API klíč, aby mohl kouč fungovat.")
+        st.markdown("---")
+        
         # --- HLADKÁ ZAOBLENÁ PLOTLY EQUITY KŘIVKA (SPLINE) ---
         if not dash_trades.empty:
-            dash_trades['date_parsed'] = pd.to_datetime(dash_trades['entry_time'])
-            dash_trades = dash_trades.sort_values('date_parsed', ascending=True).reset_index(drop=True)
-            dash_trades['cumulative_pnl'] = dash_trades['pnl_amount'].cumsum()
             
             x_vals = ['Start'] + [f"Obchod #{i+1} ({t.strftime('%d.%m.')})" for i, t in enumerate(dash_trades['date_parsed'])]
             y_vals = [0.0] + dash_trades['cumulative_pnl'].tolist()
@@ -580,8 +665,8 @@ with tab4:
                         INSERT INTO trades (
                             account_id, ticker, direction, entry_time, actual_r, pnl_amount,
                             htf_generals_check, market_phase, engine_ma_fan, 
-                            signature_entry, fresh_zone, notes_emotions
-                        ) VALUES (?, ?, ?, ?, ?, ?, 1, 'Kalendářní zápis', 1, 1, 1, 'Zapsáno přes kalendář')
+                            signature_entry, fresh_zone, notes_emotions, inverted_chart
+                        ) VALUES (?, ?, ?, ?, ?, ?, 1, 'Kalendářní zápis', 1, 1, 1, 'Zapsáno přes kalendář', 0)
                     ''', (
                         selected_acc_id, q_ticker, q_dir, q_date.strftime("%Y-%m-%d %H:%M"), q_r, q_pnl
                     ))
@@ -628,7 +713,6 @@ with tab4:
 
         # Zpracování dat pro mřížku
         if not dash_trades.empty:
-            dash_trades['date_parsed'] = pd.to_datetime(dash_trades['entry_time'])
             daily_agg = dash_trades.groupby(dash_trades['date_parsed'].dt.date).agg(
                 daily_pnl=('pnl_amount', 'sum'),
                 trade_count=('id', 'count'),
@@ -754,6 +838,7 @@ with tab4:
                             st.write(f"- Engine MA Fan: {'✅' if dt.get('engine_ma_fan') else '❌'}")
                             st.write(f"- Signature: {'✅' if dt.get('signature_entry') else '❌'}")
                             st.write(f"- Zóna: {'✅' if dt.get('fresh_zone') else '❌'}")
+                            st.write(f"- Inverted Chart: {'✅' if dt.get('inverted_chart') else '❌'}")
                             st.info(f"**Poznámka:** {dt.get('notes_emotions', 'Žádné poznámky')}")
                         
                         with col_r:
@@ -765,23 +850,23 @@ with tab4:
                                     st.caption("Obrázek se nepodařilo načíst.")
                             else:
                                 st.caption("K tomuto obchodu není uložen hlavní screenshot.")
-                            
-                            # Dodatečné obrázky
-                            conn_img2 = sqlite3.connect('trading_journal.db')
-                            cur_img2 = conn_img2.cursor()
-                            cur_img2.execute("SELECT id, image_data FROM trade_images WHERE trade_id = ?", (dt_id,))
-                            extra_imgs = cur_img2.fetchall()
-                            conn_img2.close()
-                            
-                            if extra_imgs:
-                                st.write("**Dodatečné obrázky v paměti:**")
-                                for ex_id, ex_blob in extra_imgs:
-                                    ex_img_obj = Image.open(io.BytesIO(ex_blob))
-                                    st.image(ex_img_obj, caption=f"Dodatečný záznam #{ex_id}", use_container_width=True)
             else:
                 st.info(f"Pro den {selected_detail_date.strftime('%d.%m.%Y')} nebyly zapsány žádné obchody.")
+                
+        # --- ZÁLOHA DAT (Tlačítko pro stažení) ---
+        st.markdown("---")
+        st.markdown("### 💾 Export a záloha dat")
+        if not dash_trades.empty:
+            csv_data = dash_trades.drop(columns=['image_data']).to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="⬇️ Stáhnout kompletní zálohu účtu v CSV (Excel)",
+                data=csv_data,
+                file_name=f'trading_backup_{dash_account_name}_{date.today()}.csv',
+                mime='text/csv',
+                help="Stáhne ti všechna data kromě obrázků pro další analýzu v Excelu."
+            )
         else:
-            st.info("Zatím nejsou zapsané žádné obchody pro tento účet.")
+            st.info("Zatím nejsou zapsané žádné obchody pro export.")
 
 # ==========================================
 # ZÁLOŽKA 5: Ekonomický kalendář (CZ + Místní čas)
@@ -790,7 +875,6 @@ with tab5:
     st.subheader("🌍 Živý ekonomický kalendář")
     st.write("Přehled makroekonomických zpráv v češtině, přizpůsobený na tvůj místní čas (Evropa/Praha).")
     
-    # HTML a JS widget s nastavením na češtinu ('cs') a pražskou časovou zónu ('Europe/Prague')
     calendar_html = """
     <div class="tradingview-widget-container">
       <div class="tradingview-widget-container__widget"></div>
