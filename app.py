@@ -619,6 +619,12 @@ with tab4:
         # --- HLADKÁ ZAOBLENÁ PLOTLY EQUITY KŘIVKA (SPLINE) ---
         if not dash_trades.empty:
             
+            # --- TYHLE TŘI ŘÁDKY MI V PŘEDCHOZÍM KÓDU OMYLEM VYPADLY ---
+            dash_trades['date_parsed'] = pd.to_datetime(dash_trades['entry_time'])
+            dash_trades = dash_trades.sort_values('date_parsed', ascending=True).reset_index(drop=True)
+            dash_trades['cumulative_pnl'] = dash_trades['pnl_amount'].cumsum()
+            # -----------------------------------------------------------
+            
             x_vals = ['Start'] + [f"Obchod #{i+1} ({t.strftime('%d.%m.')})" for i, t in enumerate(dash_trades['date_parsed'])]
             y_vals = [0.0] + dash_trades['cumulative_pnl'].tolist()
             
