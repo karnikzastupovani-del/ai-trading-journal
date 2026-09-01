@@ -7,6 +7,7 @@ from datetime import datetime, date
 import pandas as pd
 import io
 import calendar
+import plotly.graph_objects as go
 
 # --- 1. DATABÁZE (SQLite) ---
 def init_db():
@@ -60,8 +61,12 @@ def init_db():
 
 init_db()
 
-# --- 2. KONFIGURACE AI ---
-API_KEY = ""  # Klíč je schovaný pro bezpečné nahrání na GitHub
+# --- 2. KONFIGURACE AI (Bezpečné načítání klíče ze schránky) ---
+try:
+    API_KEY = st.secrets["API_KEY"]
+except Exception:
+    API_KEY = ""  # Prázdné pro bezpečný GitHub upload
+
 if API_KEY:
     genai.configure(api_key=API_KEY)
     model = genai.GenerativeModel('models/gemini-3.6-flash')
@@ -153,8 +158,8 @@ with tab1:
         st.image(image, caption="Nahraný hlavní graf pro analýzu", use_container_width=True)
         
         if st.button("🤖 Analyzovat graf pomocí AI"):
-            if not API_KEY:
-                st.error("⚠️ API klíč není nastaven. Nastavte ho v konfiguraci.")
+            if not model:
+                st.error("⚠️ Model AI není nakonfigurován. Zkontroluj, zda máš nastavený API klíč ve Streamlit Secrets.")
             else:
                 with st.spinner("AI studuje strukturu trhu a MA vějíř..."):
                     prompt = """
@@ -521,20 +526,33 @@ with tab4:
             
         st.markdown("---")
         
-        # --- NATIVNÍ PŘEHLEDNÁ EQUITY KŘIVKA ---
+        # --- HLADKÁ ZAOBLENÁ PLOTLY EQUITY KŘIVKA (SPLINE) ---
         if not dash_trades.empty:
             dash_trades['date_parsed'] = pd.to_datetime(dash_trades['entry_time'])
             dash_trades = dash_trades.sort_values('date_parsed', ascending=True).reset_index(drop=True)
             dash_trades['cumulative_pnl'] = dash_trades['pnl_amount'].cumsum()
             
-            chart_data = pd.DataFrame({
-                'Obchod č.': range(len(dash_trades) + 1),
-                'Net PnL': [0.0] + dash_trades['cumulative_pnl'].tolist()
-            })
-            chart_data = chart_data.set_index('Obchod č.')
+            x_vals = ['Start'] + [f"Obchod #{i+1} ({t.strftime('%d.%m.')})" for i, t in enumerate(dash_trades['date_parsed'])]
+            y_vals = [0.0] + dash_trades['cumulative_pnl'].tolist()
             
-            st.markdown(f"### 📈 Equity Křivka (Net PnL) účtu: **{dash_account_name}**")
-            st.line_chart(chart_data['Net PnL'])
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=x_vals,
+                y=y_vals,
+                mode='lines+markers',
+                line=dict(shape='spline', smoothing=1.3, color='#2ea043' if y_vals[-1] >= 0 else '#da3633', width=3),
+                marker=dict(size=8),
+                name='Net PnL'
+            ))
+            fig.update_layout(
+                title=f"Equity Křivka účtu: {dash_account_name}",
+                template='plotly_dark',
+                margin=dict(l=20, r=20, t=40, b=20),
+                height=350,
+                xaxis=dict(title='Časová osa obchodů'),
+                yaxis=dict(title='Kumulativní PnL ($)')
+            )
+            st.plotly_chart(fig, use_container_width=True)
             st.markdown("---")
         
         st.markdown(f"### 📅 Obchodní kalendář – {dash_account_name}")
