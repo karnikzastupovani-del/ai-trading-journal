@@ -59,6 +59,7 @@ def init_db():
         );
     ''')
     
+    # Bezpečné rozšíření stávající databáze o nové sloupce
     try: cursor.execute("ALTER TABLE trades ADD COLUMN status TEXT DEFAULT 'Closed';")
     except sqlite3.OperationalError: pass
     try: cursor.execute("ALTER TABLE trades ADD COLUMN risk_amount REAL DEFAULT 0.0;")
@@ -84,6 +85,9 @@ def init_db():
     try: cursor.execute("ALTER TABLE trades ADD COLUMN main_image_label TEXT DEFAULT 'Vstupní graf';")
     except sqlite3.OperationalError: pass
     try: cursor.execute("ALTER TABLE trade_images ADD COLUMN image_label TEXT DEFAULT 'Screenshot';")
+    except sqlite3.OperationalError: pass
+    # Nový sloupec pro závěrečnou reflexi
+    try: cursor.execute("ALTER TABLE trades ADD COLUMN post_trade_notes TEXT DEFAULT '';")
     except sqlite3.OperationalError: pass
         
     conn.commit()
@@ -157,19 +161,16 @@ with tab1:
     if accounts_df.empty:
         st.warning("⚠️ Nejdříve si musíš vytvořit alespoň jeden obchodní účet v záložce 'Správa účtů'!")
     
-    # Podpora více souborů naráz
     uploaded_files = st.file_uploader("Nahraj screenshoty grafu (PNG, JPG) - můžeš vybrat více najednou", type=["png", "jpg", "jpeg"], accept_multiple_files=True, key="main_upload")
     
-    prepared_images = [] # Seznam tuples: (bytes, label)
+    prepared_images = []
     
     if uploaded_files:
         st.markdown("📸 **Pojmenování nahraných fotek:**")
-        # Vytvoření mřížky pro náhledy
         cols = st.columns(len(uploaded_files) if len(uploaded_files) <= 4 else 4)
         
         for i, uf in enumerate(uploaded_files):
             img_bytes = uf.getvalue()
-            # Náhledy a popisky uspořádané vedle sebe
             col_idx = i % 4
             with cols[col_idx]:
                 st.image(img_bytes, width=150)
@@ -177,7 +178,6 @@ with tab1:
                 lbl = st.text_input(f"Název (fotka {i+1})", value=default_label, key=f"img_lbl_{i}")
                 prepared_images.append((img_bytes, lbl))
                 
-        # Pro AI analýzu vezmeme první fotku
         if st.button("🤖 Analyzovat první graf pomocí AI"):
             if not model:
                 st.error("⚠️ Model AI není nakonfigurován. Zkontroluj API klíč.")
@@ -240,24 +240,22 @@ with tab1:
                 conn = sqlite3.connect('trading_journal.db')
                 cursor = conn.cursor()
                 
-                # Uložení hlavního obchodu (první obrázek)
                 cursor.execute('''
                     INSERT INTO trades (
                         account_id, ticker, direction, entry_time, actual_r, pnl_amount,
                         htf_generals_check, market_phase, engine_ma_fan, 
                         signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart, 
-                        partial_pnl, currency, initial_lots, closed_lots, status, risk_amount, sl_be_value, partials_log, main_image_label
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        partial_pnl, currency, initial_lots, closed_lots, status, risk_amount, sl_be_value, partials_log, main_image_label, post_trade_notes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     selected_acc_id, ticker, direction, datetime.now().strftime("%Y-%m-%d %H:%M"), 
                     0.0, 0.0,
                     htf_check, market_phase, engine_check, signature_check, 
                     zone_check, notes, prepared_images[0][0], inverted_chart_check, 
-                    0.0, trade_currency, lots_input, 0.0, 'Open', risk_input, risk_input, "", prepared_images[0][1]
+                    0.0, trade_currency, lots_input, 0.0, 'Open', risk_input, risk_input, "", prepared_images[0][1], ""
                 ))
                 trade_id = cursor.lastrowid
                 
-                # Uložení dalších obrázků z hromadného nahrání
                 if len(prepared_images) > 1:
                     for img_bytes, lbl in prepared_images[1:]:
                         cursor.execute("INSERT INTO trade_images (trade_id, image_data, image_label) VALUES (?, ?, ?)", (trade_id, img_bytes, lbl))
@@ -279,7 +277,8 @@ with tab2:
                t.signature_entry, t.fresh_zone, t.notes_emotions, t.image_data, t.account_id, t.inverted_chart, 
                COALESCE(t.partial_pnl, 0.0), COALESCE(t.currency, 'USD'), COALESCE(t.initial_lots, 0.0), 
                COALESCE(t.closed_lots, 0.0), COALESCE(t.status, 'Closed'), COALESCE(t.risk_amount, 0.0), 
-               COALESCE(t.sl_be_value, 0.0), COALESCE(t.partials_log, ''), COALESCE(t.main_image_label, 'Vstupní graf')
+               COALESCE(t.sl_be_value, 0.0), COALESCE(t.partials_log, ''), COALESCE(t.main_image_label, 'Vstupní graf'),
+               COALESCE(t.post_trade_notes, '')
         FROM trades t
         LEFT JOIN accounts a ON t.account_id = a.id
         ORDER BY t.id DESC
@@ -311,7 +310,7 @@ with tab2:
         for t in open_trades:
             (t_id, t_acc_name, t_acc_init, t_ticker, t_dir, t_time, t_r, t_pnl, 
              t_htf, t_phase, t_eng, t_sig, t_zone, t_notes, t_img, t_acc_id, t_inv, 
-             t_part_pnl, t_curr, t_init_lots, t_closed_lots, t_status, t_risk, t_sl_val, t_part_log, t_main_img_label) = t
+             t_part_pnl, t_curr, t_init_lots, t_closed_lots, t_status, t_risk, t_sl_val, t_part_log, t_main_img_label, t_post_notes) = t
             
             clean_acc_name = str(t_acc_name).strip() if t_acc_name else "Neznámý účet"
             rem_lots = t_init_lots - t_closed_lots
@@ -321,7 +320,6 @@ with tab2:
             
             with st.expander(header):
                 
-                # 1. METRIKY ÚPLNĚ NAHOŘE
                 m1, m2, m3, m4, m5 = st.columns(5)
                 m1.metric("Původní Risk", f"{sym}{t_risk:,.2f}")
                 m2.metric("Vstupní Loty", f"{t_init_lots:g}")
@@ -331,7 +329,6 @@ with tab2:
                 
                 st.markdown("---")
                 
-                # 2. ŘÍZENÍ A SPRÁVA HNED POD METRIKAMI
                 st.markdown("### ⚙️ Řízení a Správa")
                 c_m1, c_m2, c_m3 = st.columns(3)
                 
@@ -377,7 +374,7 @@ with tab2:
                 with c_m3:
                     st.markdown("#### 🏁 Zcela Uzavřít")
                     with st.form(f"close_form_{t_id}"):
-                        f_pnl = st.number_input(f"Zisk/Ztráta ze ZBYTKU", value=0.0)
+                        f_pnl = st.number_input(f"Zisk/Ztráta ze ZBYTKU (např. zasažený SL/BE/TP)", value=0.0)
                         f_r = st.number_input("Konečné R (např. 2.5)", value=0.0)
                         submit_c = st.form_submit_button("Do Historie")
                         
@@ -396,7 +393,6 @@ with tab2:
                 
                 st.markdown("---")
                 
-                # 3. PARAMETRY A DENÍK ŘÍZENÍ
                 col_left, col_right = st.columns(2)
                 with col_left:
                     st.markdown("### 📋 Parametry vstupu")
@@ -414,8 +410,20 @@ with tab2:
                     else:
                         st.caption("Žádné záznamy o řízení.")
                     
+                    st.markdown("### 📝 Závěrečné poznámky / Reflexe")
+                    with st.form(f"post_notes_form_{t_id}"):
+                        new_post_notes = st.text_area("Tvé vlastní zápisky k řízení nebo po uzavření obchodu:", value=t_post_notes)
+                        submit_notes = st.form_submit_button("💾 Uložit zápisky")
+                        if submit_notes:
+                            conn_pn = sqlite3.connect('trading_journal.db')
+                            c_pn = conn_pn.cursor()
+                            c_pn.execute("UPDATE trades SET post_trade_notes = ? WHERE id = ?", (new_post_notes, t_id))
+                            conn_pn.commit()
+                            conn_pn.close()
+                            st.rerun()
+
                     st.write("---")
-                    if st.button("🗑️ Smazat tento obchod natrvalo", key=f"del_open_{t_id}"):
+                    if st.button("🗑️ Smazat tento otevřený obchod (Zrušit)", key=f"del_open_{t_id}"):
                         conn_d = sqlite3.connect('trading_journal.db')
                         c_d = conn_d.cursor()
                         c_d.execute("DELETE FROM trade_images WHERE trade_id = ?", (t_id,))
@@ -424,7 +432,6 @@ with tab2:
                         conn_d.close()
                         st.rerun()
 
-                # 4. FOTOGALERIE V EXPANDERU (ZMENŠENÉ FOTKY)
                 with st.expander("🖼️ Fotogalerie (Kliknutím fotku zvětšíš)"):
                     conn_img = sqlite3.connect('trading_journal.db')
                     cursor_img = conn_img.cursor()
@@ -432,16 +439,13 @@ with tab2:
                     extra_images = cursor_img.fetchall()
                     conn_img.close()
                     
-                    # Zobrazení ve sloupcích pro malý náhled
                     gal_cols = st.columns(4)
                     
-                    # Zobrazení hlavní fotky
                     if t_img is not None:
                         with gal_cols[0]:
                             img_obj = Image.open(io.BytesIO(t_img))
                             st.image(img_obj, caption=f"{t_main_img_label}", use_container_width=True)
                     
-                    # Zobrazení dodatečných fotek
                     if extra_images:
                         for idx, (ex_id, ex_label, ex_blob) in enumerate(extra_images):
                             col_idx = (idx + 1) % 4
@@ -457,7 +461,7 @@ with tab2:
                     with ex_up_col2:
                         extra_label = st.text_input("Název (např. Partial 1)", value="Průběh", key=f"ex_lbl_{t_id}")
                     with ex_up_col3:
-                        st.write("") # Mezera pro zarovnání tlačítka
+                        st.write("")
                         st.write("")
                         if extra_upload is not None:
                             if st.button(f"💾 Uložit foto", key=f"btn_save_ex_{t_id}"):
@@ -479,7 +483,7 @@ with tab2:
         for t in closed_trades:
             (t_id, t_acc_name, t_acc_init, t_ticker, t_dir, t_time, t_r, t_pnl, 
              t_htf, t_phase, t_eng, t_sig, t_zone, t_notes, t_img, t_acc_id, t_inv, 
-             t_part_pnl, t_curr, t_init_lots, t_closed_lots, t_status, t_risk, t_sl_val, t_part_log, t_main_img_label) = t
+             t_part_pnl, t_curr, t_init_lots, t_closed_lots, t_status, t_risk, t_sl_val, t_part_log, t_main_img_label, t_post_notes) = t
             
             clean_acc_name = str(t_acc_name).strip() if t_acc_name else "Neznámý účet"
             init_b = t_acc_init if t_acc_init and t_acc_init > 0 else 200000.0
@@ -505,11 +509,9 @@ with tab2:
                 
                 with col_left:
                     st.markdown("### 📋 Výsledek a parametry")
-                    st.write(f"**Hlavní PnL ze zbytku:** {sym}{t_pnl:,.2f}")
-                    st.write(f"**Zisk z Partials:** {sym}{t_part_pnl:,.2f}")
-                    if t_part_log:
-                        st.markdown("**📜 Deník Řízení:**")
-                        st.text(t_part_log)
+                    st.markdown(f"**Hlavní PnL ze zbytku pozice (např. zasažený SL/BE/TP):** {sym}{t_pnl:,.2f}")
+                    st.markdown(f"**Zisk z Partials:** {sym}{t_part_pnl:,.2f}")
+                    st.markdown(f"### 💰 CELKOVÝ VÝSLEDEK: {sym}{total_trade_pnl:,.2f}")
                         
                     st.write("---")
                     st.write(f"**Fáze trhu:** `{t_phase}`")
@@ -521,7 +523,23 @@ with tab2:
                     st.info(f"**Poznámky ke vstupu:** {t_notes}")
                 
                 with col_right:
-                    st.write("") # Zarovnání layoutu
+                    st.markdown("### 📜 Deník Řízení:")
+                    if t_part_log:
+                        st.text(t_part_log)
+                    else:
+                        st.caption("Žádné záznamy o řízení.")
+                        
+                    st.markdown("### 📝 Závěrečné poznámky / Reflexe")
+                    with st.form(f"post_notes_form_hist_{t_id}"):
+                        new_post_notes = st.text_area("Tvé vlastní zápisky k řízení nebo po uzavření obchodu:", value=t_post_notes)
+                        submit_notes = st.form_submit_button("💾 Uložit zápisky")
+                        if submit_notes:
+                            conn_pn = sqlite3.connect('trading_journal.db')
+                            c_pn = conn_pn.cursor()
+                            c_pn.execute("UPDATE trades SET post_trade_notes = ? WHERE id = ?", (new_post_notes, t_id))
+                            conn_pn.commit()
+                            conn_pn.close()
+                            st.rerun()
                 
                 with st.expander("🖼️ Fotogalerie (Kliknutím fotku zvětšíš)"):
                     conn_img = sqlite3.connect('trading_journal.db')
@@ -675,12 +693,12 @@ with tab4:
         
         conn_d = sqlite3.connect('trading_journal.db')
         dash_trades = pd.read_sql_query(
-            "SELECT id, ticker, direction, entry_time, actual_r, pnl_amount, htf_generals_check, market_phase, engine_ma_fan, signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart, COALESCE(initial_lots, 0.0) as initial_lots, COALESCE(closed_lots, 0.0) as closed_lots, COALESCE(partial_pnl, 0.0) as partial_pnl, COALESCE(currency, 'USD') as currency, COALESCE(status, 'Closed') as status, COALESCE(partials_log, '') as partials_log, COALESCE(main_image_label, 'Vstupní graf') as main_image_label FROM trades WHERE account_id = ? ORDER BY id ASC", 
+            "SELECT id, ticker, direction, entry_time, actual_r, pnl_amount, htf_generals_check, market_phase, engine_ma_fan, signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart, COALESCE(initial_lots, 0.0) as initial_lots, COALESCE(closed_lots, 0.0) as closed_lots, COALESCE(partial_pnl, 0.0) as partial_pnl, COALESCE(currency, 'USD') as currency, COALESCE(status, 'Closed') as status, COALESCE(partials_log, '') as partials_log, COALESCE(main_image_label, 'Vstupní graf') as main_image_label, COALESCE(post_trade_notes, '') as post_trade_notes FROM trades WHERE account_id = ? ORDER BY id ASC", 
             conn_d, params=(selected_acc_id,)
         )
         if dash_trades.empty:
             fallback_query = '''
-                SELECT t.id, t.ticker, t.direction, t.entry_time, t.actual_r, t.pnl_amount, t.htf_generals_check, t.market_phase, t.engine_ma_fan, t.signature_entry, t.fresh_zone, t.notes_emotions, t.image_data, t.inverted_chart, COALESCE(t.initial_lots, 0.0) as initial_lots, COALESCE(t.closed_lots, 0.0) as closed_lots, COALESCE(t.partial_pnl, 0.0) as partial_pnl, COALESCE(t.currency, 'USD') as currency, COALESCE(t.status, 'Closed') as status, COALESCE(t.partials_log, '') as partials_log, COALESCE(t.main_image_label, 'Vstupní graf') as main_image_label
+                SELECT t.id, t.ticker, t.direction, t.entry_time, t.actual_r, t.pnl_amount, t.htf_generals_check, t.market_phase, t.engine_ma_fan, t.signature_entry, t.fresh_zone, t.notes_emotions, t.image_data, t.inverted_chart, COALESCE(t.initial_lots, 0.0) as initial_lots, COALESCE(t.closed_lots, 0.0) as closed_lots, COALESCE(t.partial_pnl, 0.0) as partial_pnl, COALESCE(t.currency, 'USD') as currency, COALESCE(t.status, 'Closed') as status, COALESCE(t.partials_log, '') as partials_log, COALESCE(t.main_image_label, 'Vstupní graf') as main_image_label, COALESCE(t.post_trade_notes, '') as post_trade_notes
                 FROM trades t
                 LEFT JOIN accounts a ON t.account_id = a.id
                 WHERE TRIM(a.name) = ? ORDER BY t.id ASC
@@ -979,8 +997,9 @@ with tab4:
                         col_l, col_r = st.columns(2)
                         with col_l:
                             st.write(f"**Dopad na účet:** `{trade_pct_item:+.2f}%`")
-                            st.write(f"**Hlavní PnL:** {dt['pnl_amount']:.2f} {dt_curr}")
-                            st.write(f"**Partials PnL:** {dt['partial_pnl']:.2f} {dt_curr}")
+                            st.write(f"**Hlavní PnL ze zbytku:** {dt['pnl_amount']:.2f} {dt_curr}")
+                            st.write(f"**Zisk z Partials:** {dt['partial_pnl']:.2f} {dt_curr}")
+                            st.markdown(f"### 💰 CELKOVÝ VÝSLEDEK: {dt_curr} {total_day_pnl:,.2f}")
                             st.write("---")
                             st.write(f"**Fáze trhu:** `{dt.get('market_phase', 'N/A')}`")
                             st.write(f"- Generals' check: {'✅' if dt.get('htf_generals_check') else '❌'}")
@@ -996,6 +1015,12 @@ with tab4:
                             else:
                                 st.caption("Žádné záznamy o řízení.")
                                 
+                            st.markdown("### 📝 Závěrečné poznámky / Reflexe")
+                            if dt.get('post_trade_notes'):
+                                st.info(dt['post_trade_notes'])
+                            else:
+                                st.caption("Žádné poznámky po uzavření obchodu nebyly zadány.")
+                                
                             st.write("---")
                             if st.button("🗑️ Smazat tento obchod natrvalo", key=f"del_cal_trade_{dt_id}"):
                                 conn_d = sqlite3.connect('trading_journal.db')
@@ -1007,7 +1032,6 @@ with tab4:
                                 st.success("Obchod smazán! Stránka se brzy obnoví...")
                                 st.rerun()
 
-                        # Plnohodnotná galerie zmenšených fotek přímo v kalendáři
                         with st.expander("🖼️ Fotogalerie (Kliknutím fotku zvětšíš)"):
                             conn_img_cal = sqlite3.connect('trading_journal.db')
                             cursor_img_cal = conn_img_cal.cursor()
