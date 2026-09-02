@@ -60,14 +60,14 @@ def init_db():
     ''')
     
     # Bezpečné rozšíření stávající databáze o nové sloupce
-    # Pro zpětnou kompatibilitu se staršími obchody dáme status 'Closed' (uzavřeno)
     try: cursor.execute("ALTER TABLE trades ADD COLUMN status TEXT DEFAULT 'Closed';")
     except sqlite3.OperationalError: pass
     
     try: cursor.execute("ALTER TABLE trades ADD COLUMN risk_amount REAL DEFAULT 0.0;")
     except sqlite3.OperationalError: pass
     
-    try: cursor.execute("ALTER TABLE trades ADD COLUMN sl_to_be BOOLEAN DEFAULT 0;")
+    # Nový sloupec pro garantovaný zisk na SL (nahrazuje původní boolean)
+    try: cursor.execute("ALTER TABLE trades ADD COLUMN sl_be_value REAL DEFAULT 0.0;")
     except sqlite3.OperationalError: pass
     
     try: cursor.execute("ALTER TABLE trades ADD COLUMN partials_log TEXT DEFAULT '';")
@@ -242,14 +242,14 @@ with tab1:
                         account_id, ticker, direction, entry_time, actual_r, pnl_amount,
                         htf_generals_check, market_phase, engine_ma_fan, 
                         signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart, 
-                        partial_pnl, currency, initial_lots, closed_lots, status, risk_amount, sl_to_be, partials_log
+                        partial_pnl, currency, initial_lots, closed_lots, status, risk_amount, sl_be_value, partials_log
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     selected_acc_id, ticker, direction, datetime.now().strftime("%Y-%m-%d %H:%M"), 
-                    0.0, 0.0,  # Zpočátku nulové R a nulový finální PnL
+                    0.0, 0.0,
                     htf_check, market_phase, engine_check, signature_check, 
                     zone_check, notes, st.session_state.saved_image_bytes, inverted_chart_check, 
-                    0.0, trade_currency, lots_input, 0.0, 'Open', risk_input, 0, ""
+                    0.0, trade_currency, lots_input, 0.0, 'Open', risk_input, 0.0, ""
                 ))
                 conn.commit()
                 conn.close()
@@ -268,7 +268,7 @@ with tab2:
                t.signature_entry, t.fresh_zone, t.notes_emotions, t.image_data, t.account_id, t.inverted_chart, 
                COALESCE(t.partial_pnl, 0.0), COALESCE(t.currency, 'USD'), COALESCE(t.initial_lots, 0.0), 
                COALESCE(t.closed_lots, 0.0), COALESCE(t.status, 'Closed'), COALESCE(t.risk_amount, 0.0), 
-               COALESCE(t.sl_to_be, 0), COALESCE(t.partials_log, '')
+               COALESCE(t.sl_be_value, 0.0), COALESCE(t.partials_log, '')
         FROM trades t
         LEFT JOIN accounts a ON t.account_id = a.id
         ORDER BY t.id DESC
@@ -300,21 +300,23 @@ with tab2:
         for t in open_trades:
             (t_id, t_acc_name, t_acc_init, t_ticker, t_dir, t_time, t_r, t_pnl, 
              t_htf, t_phase, t_eng, t_sig, t_zone, t_notes, t_img, t_acc_id, t_inv, 
-             t_part_pnl, t_curr, t_init_lots, t_closed_lots, t_status, t_risk, t_sl_be, t_part_log) = t
+             t_part_pnl, t_curr, t_init_lots, t_closed_lots, t_status, t_risk, t_sl_be_val, t_part_log) = t
             
             clean_acc_name = str(t_acc_name).strip() if t_acc_name else "Neznámý účet"
             rem_lots = t_init_lots - t_closed_lots
             sym = get_sym(t_curr)
             
+            # Celkem zajištěno = peníze z partialů
             header = f"🟡 #{t_id} [{clean_acc_name}] | {t_time} | {t_ticker} ({t_dir}) | Zbývá: {rem_lots:g} z {t_init_lots:g} Lotů | Zajištěno: {sym}{t_part_pnl:+,.2f}"
             
             with st.expander(header):
                 
-                m1, m2, m3, m4 = st.columns(4)
+                m1, m2, m3, m4, m5 = st.columns(5)
                 m1.metric("Původní Risk", f"{sym}{t_risk:,.2f}")
                 m2.metric("Vstupní Loty", f"{t_init_lots:g}")
                 m3.metric("Zbývající Loty", f"{rem_lots:g}")
-                m4.metric("Zajištěný Zisk", f"{sym}{t_part_pnl:,.2f}")
+                m4.metric("Zisk z Partials", f"{sym}{t_part_pnl:,.2f}")
+                m5.metric("Garantováno na SL", f"{sym}{t_sl_be_val:,.2f}")
                 
                 st.markdown("---")
                 col_mng1, col_mng2 = st.columns(2)
@@ -330,7 +332,7 @@ with tab2:
                             new_closed = t_closed_lots + p_lots
                             new_part_pnl = t_part_pnl + p_money
                             now_str = datetime.now().strftime("%d.%m. %H:%M")
-                            log_entry = f"[{now_str}] Vybráno {p_lots} lotů | Hodnota: {p_money:+.2f} {t_curr}\n"
+                            log_entry = f"[{now_str}] Vybráno {p_lots} lotů | Zisk: {p_money:+.2f} {t_curr}\n"
                             new_log = t_part_log + log_entry
                             
                             conn_p = sqlite3.connect('trading_journal.db')
@@ -341,17 +343,18 @@ with tab2:
                             st.success("Partial uložen!")
                             st.rerun()
                             
-                    st.markdown("#### 🛡️ Řízení rizika")
-                    sl_state_str = "✅ Posunut" if t_sl_be else "❌ Na původní hodnotě"
-                    st.write(f"Stop Loss na BE: **{sl_state_str}**")
-                    if st.button("Přepnout stav SL (na BE / Původní)", key=f"be_btn_{t_id}"):
-                        new_be_state = 0 if t_sl_be else 1
-                        conn_be = sqlite3.connect('trading_journal.db')
-                        c_be = conn_be.cursor()
-                        c_be.execute("UPDATE trades SET sl_to_be = ? WHERE id = ?", (new_be_state, t_id))
-                        conn_be.commit()
-                        conn_be.close()
-                        st.rerun()
+                    st.markdown("#### 🛡️ Řízení rizika (Stop Loss)")
+                    st.write("Pokud posouváš SL na BE (nebo do mírného plusu pokrývajícího poplatky), zadej hodnotu:")
+                    with st.form(f"be_form_{t_id}"):
+                        new_be_val = st.number_input(f"Garantovaný zisk na SL (BE+) v {t_curr}", value=float(t_sl_be_val), step=5.0)
+                        submit_be = st.form_submit_button("💾 Uložit posun SL")
+                        if submit_be:
+                            conn_be = sqlite3.connect('trading_journal.db')
+                            c_be = conn_be.cursor()
+                            c_be.execute("UPDATE trades SET sl_be_value = ? WHERE id = ?", (new_be_val, t_id))
+                            conn_be.commit()
+                            conn_be.close()
+                            st.rerun()
 
                 with col_mng2:
                     st.markdown("#### 🏁 Kompletně Uzavřít Obchod")
@@ -393,7 +396,7 @@ with tab2:
         for t in closed_trades:
             (t_id, t_acc_name, t_acc_init, t_ticker, t_dir, t_time, t_r, t_pnl, 
              t_htf, t_phase, t_eng, t_sig, t_zone, t_notes, t_img, t_acc_id, t_inv, 
-             t_part_pnl, t_curr, t_init_lots, t_closed_lots, t_status, t_risk, t_sl_be, t_part_log) = t
+             t_part_pnl, t_curr, t_init_lots, t_closed_lots, t_status, t_risk, t_sl_be_val, t_part_log) = t
             
             clean_acc_name = str(t_acc_name).strip() if t_acc_name else "Neznámý účet"
             init_b = t_acc_init if t_acc_init and t_acc_init > 0 else 200000.0
@@ -592,13 +595,13 @@ with tab4:
             dash_trades = pd.read_sql_query(fallback_query, conn_d, params=(dash_account_name,))
         conn_d.close()
         
-        # Filtrování pro statistiky - metriky (Rko, WinRate) počítáme jen z UZAVŘENÝCH obchodů
         closed_dash_trades = dash_trades[dash_trades['status'] == 'Closed'].copy()
         total_closed_trades = len(closed_dash_trades)
         
         if not dash_trades.empty:
             dash_trades['total_trade_pnl'] = dash_trades['pnl_amount'] + dash_trades['partial_pnl'].fillna(0)
-            total_pnl_all = dash_trades['total_trade_pnl'].sum() # Včetně otevřených partials
+            total_pnl_all = dash_trades['total_trade_pnl'].sum()
+            dash_trades['date_parsed'] = pd.to_datetime(dash_trades['entry_time'])
         else:
             total_pnl_all = 0.0
             
@@ -612,6 +615,8 @@ with tab4:
             avg_loss = losing_trades['total_trade_pnl'].mean() if not losing_trades.empty else 0.0
             best_trade = closed_dash_trades['total_trade_pnl'].max() if not closed_dash_trades.empty else 0.0
             worst_trade = closed_dash_trades['total_trade_pnl'].min() if not closed_dash_trades.empty else 0.0
+            
+            closed_dash_trades['date_parsed'] = pd.to_datetime(closed_dash_trades['entry_time'])
         else:
             win_rate = 0.0; avg_win = 0.0; avg_loss = 0.0; best_trade = 0.0; worst_trade = 0.0
             
@@ -728,7 +733,6 @@ with tab4:
         # --- HLADKÁ ZAOBLENÁ PLOTLY EQUITY KŘIVKA (SPLINE) ---
         if not closed_dash_trades.empty:
             
-            closed_dash_trades['date_parsed'] = pd.to_datetime(closed_dash_trades['entry_time'])
             closed_dash_trades = closed_dash_trades.sort_values('date_parsed', ascending=True).reset_index(drop=True)
             closed_dash_trades['cumulative_pnl'] = closed_dash_trades['total_trade_pnl'].cumsum()
             
@@ -755,7 +759,9 @@ with tab4:
             st.plotly_chart(fig, use_container_width=True)
             st.markdown("---")
         
-        # Zpracování dat pro mřížku kalendáře
+        # ==========================================
+        # KALENDÁŘ A DETAIL DNE
+        # ==========================================
         if 'cal_year' not in st.session_state:
             st.session_state.cal_year = date.today().year
         if 'cal_month' not in st.session_state:
@@ -843,6 +849,63 @@ with tab4:
                                 </div>
                             """, unsafe_allow_html=True)
 
+        # --- OBNOVENÝ DETAIL DNE POD KALENDÁŘEM ---
+        st.markdown("---")
+        st.subheader("🔍 Detail obchodů pro vybraný den")
+        
+        selected_detail_date = st.date_input("Zvol datum, pro které chceš zobrazit všechny zadané obchody", value=date.today(), key="detail_date_picker")
+        
+        if not dash_trades.empty:
+            dash_trades['date_only'] = dash_trades['date_parsed'].dt.date
+            day_trades = dash_trades[dash_trades['date_only'] == selected_detail_date]
+            
+            if not day_trades.empty:
+                st.success(f"Nalezeno {len(day_trades)} obchodů pro den {selected_detail_date.strftime('%d.%m.%Y')}.")
+                
+                for _, dt in day_trades.iterrows():
+                    dt_id = dt['id']
+                    dt_ticker = dt['ticker']
+                    dt_dir = dt['direction']
+                    dt_time_str = dt['entry_time']
+                    dt_curr = dt['currency']
+                    dt_status = dt['status']
+                    
+                    total_day_pnl = dt['total_trade_pnl']
+                    trade_pct_item = (total_day_pnl / selected_acc_init) * 100 if selected_acc_init > 0 else 0.0
+                    
+                    if dt_status == 'Open':
+                        badge = "🟡 (Otevřený)"
+                    else:
+                        badge = "🟢 (Uzavřený)" if total_day_pnl >= 0 else "🔴 (Uzavřený)"
+                        
+                    header_str = f"{badge} Obchod #{dt_id} | Čas: {dt_time_str} | Pár: {dt_ticker} ({dt_dir}) | PnL: {total_day_pnl:+,.2f} {dt_curr} ({trade_pct_item:+.2f}%)"
+                    
+                    with st.expander(header_str):
+                        st.info(f"Tento obchod je momentálně ve stavu: **{dt_status}**. Pro detailní úpravu parametrů nebo výběr Partials běž do záložky 'Řízení & Historie'.")
+                        
+                        col_l, col_r = st.columns(2)
+                        with col_l:
+                            st.write(f"**Dopad na účet:** `{trade_pct_item:+.2f}%`")
+                            st.write(f"- Generals' check: {'✅' if dt.get('htf_generals_check') else '❌'}")
+                            st.write(f"- Engine MA Fan: {'✅' if dt.get('engine_ma_fan') else '❌'}")
+                            st.write(f"- Signature: {'✅' if dt.get('signature_entry') else '❌'}")
+                            st.write(f"- Zóna: {'✅' if dt.get('fresh_zone') else '❌'}")
+                        
+                        with col_r:
+                            if st.button("🗑️ Smazat tento obchod natrvalo", key=f"del_cal_trade_{dt_id}"):
+                                conn_d = sqlite3.connect('trading_journal.db')
+                                c_d = conn_d.cursor()
+                                c_d.execute("DELETE FROM trade_images WHERE trade_id = ?", (dt_id,))
+                                c_d.execute("DELETE FROM trades WHERE id = ?", (dt_id,))
+                                conn_d.commit()
+                                conn_d.close()
+                                st.success("Obchod smazán! Stránka se brzy obnoví...")
+                                st.rerun()
+            else:
+                st.info(f"Pro den {selected_detail_date.strftime('%d.%m.%Y')} nebyly zapsány žádné obchody.")
+        else:
+            st.info("Nemáš uloženy žádné obchody pro zobrazení.")
+                
         # --- ZÁLOHA DAT (Tlačítko pro stažení) ---
         st.markdown("---")
         st.markdown("### 💾 Export a záloha dat")
