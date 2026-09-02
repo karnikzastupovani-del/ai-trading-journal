@@ -77,6 +77,13 @@ def init_db():
         
     try: cursor.execute("ALTER TABLE trades ADD COLUMN currency TEXT DEFAULT 'USD';")
     except sqlite3.OperationalError: pass
+
+    # Nové sloupce pro loty
+    try: cursor.execute("ALTER TABLE trades ADD COLUMN initial_lots REAL DEFAULT 0.0;")
+    except sqlite3.OperationalError: pass
+    
+    try: cursor.execute("ALTER TABLE trades ADD COLUMN closed_lots REAL DEFAULT 0.0;")
+    except sqlite3.OperationalError: pass
         
     conn.commit()
     conn.close()
@@ -243,16 +250,19 @@ with tab1:
                 trade_currency = st.selectbox("Měna obchodu", curr_list, index=def_idx)
                 
             st.markdown("---")
-            st.write("✂️ **Částečné výběry (Partials)**")
-            p_col1, p_col2 = st.columns(2)
+            st.write("✂️ **Řízení pozice a Partials**")
+            p_col1, p_col2, p_col3 = st.columns(3)
             with p_col1:
-                partial_lots = st.text_input("Odebrané Loty (nepovinné)", placeholder="Např. 6 lotů")
+                initial_lots = st.number_input("Celková velikost pozice (Loty)", min_value=0.0, value=0.0, step=0.01)
             with p_col2:
+                closed_lots = st.number_input("Odebrané Loty (Partials)", min_value=0.0, value=0.0, step=0.01)
+            with p_col3:
                 partial_pnl = st.number_input(f"Zisk/Ztráta z Partials ({trade_currency})", value=0.0)
                 
             total_trade_pnl = pnl + partial_pnl
             pct_preview = (total_trade_pnl / selected_acc_init) * 100 if selected_acc_init > 0 else 0.0
-            st.info(f"📊 **Celkový dopad na účet (Hlavní + Partials):** `{pct_preview:+.2f}%` z kapitálu ({get_sym(selected_acc_curr)}{selected_acc_init:,.2f}) | **Celkem:** `{get_sym(selected_acc_curr)}{total_trade_pnl:,.2f}`")
+            
+            st.info(f"📊 **Celkový dopad na účet:** `{pct_preview:+.2f}%` ({get_sym(selected_acc_curr)}{selected_acc_init:,.2f}) | **Celkem peníze:** `{get_sym(selected_acc_curr)}{total_trade_pnl:,.2f}`")
                 
             htf_check = st.checkbox("Generals' check (EMA 5, 10, 20 & daily MB)", value=data.get("htf_context", False))
             market_phase = st.text_input("Fáze trhu", value=data.get("market_phase", "Contain line"))
@@ -273,12 +283,12 @@ with tab1:
                     INSERT INTO trades (
                         account_id, ticker, direction, entry_time, actual_r, pnl_amount,
                         htf_generals_check, market_phase, engine_ma_fan, 
-                        signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart, partials, partial_pnl, currency
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart, partial_pnl, currency, initial_lots, closed_lots
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     selected_acc_id, ticker, direction, datetime.now().strftime("%Y-%m-%d %H:%M"), 
                     actual_r, pnl, htf_check, market_phase, engine_check, signature_check, 
-                    zone_check, notes, st.session_state.saved_image_bytes, inverted_chart_check, partial_lots, partial_pnl, trade_currency
+                    zone_check, notes, st.session_state.saved_image_bytes, inverted_chart_check, partial_pnl, trade_currency, initial_lots, closed_lots
                 ))
                 conn.commit()
                 conn.close()
@@ -296,7 +306,8 @@ with tab2:
         SELECT t.id, a.name, a.initial_balance, t.ticker, t.direction, t.entry_time, t.actual_r, t.pnl_amount, 
                t.htf_generals_check, t.market_phase, t.engine_ma_fan, 
                t.signature_entry, t.fresh_zone, t.notes_emotions, t.image_data, t.account_id, t.inverted_chart, 
-               t.partials, COALESCE(t.partial_pnl, 0.0) as partial_pnl, COALESCE(t.currency, 'USD') as currency
+               COALESCE(t.partial_pnl, 0.0) as partial_pnl, COALESCE(t.currency, 'USD') as currency,
+               COALESCE(t.initial_lots, 0.0) as initial_lots, COALESCE(t.closed_lots, 0.0) as closed_lots
         FROM trades t
         LEFT JOIN accounts a ON t.account_id = a.id
         ORDER BY t.id DESC
@@ -320,7 +331,7 @@ with tab2:
         
         for t in filtered_trades:
             (t_id, t_acc_name, t_acc_init, t_ticker, t_dir, t_time, t_r, t_pnl, 
-             t_htf, t_phase, t_eng, t_sig, t_zone, t_notes, t_img, t_acc_id, t_inv, t_partials, t_part_pnl, t_curr) = t
+             t_htf, t_phase, t_eng, t_sig, t_zone, t_notes, t_img, t_acc_id, t_inv, t_part_pnl, t_curr, t_init_lots, t_closed_lots) = t
             
             clean_acc_name = str(t_acc_name).strip() if t_acc_name else "Neznámý účet"
             init_b = t_acc_init if t_acc_init and t_acc_init > 0 else 200000.0
@@ -350,19 +361,25 @@ with tab2:
                     col_e1, col_e2, col_e3 = st.columns(3)
                     with col_e1:
                         new_pnl = st.number_input(f"Hlavní PnL ({t_curr})", value=float(pnl_val), key=f"pnl_{t_id}")
-                        new_partial_pnl = st.number_input(f"Partials PnL ({t_curr})", value=float(part_pnl_val), key=f"ppnl_{t_id}")
                     with col_e2:
                         new_r = st.number_input("Dosažené R", value=float(t_r) if t_r is not None else 0.0, key=f"r_{t_id}")
-                        new_partials = st.text_input("Odebrané Loty", value=str(t_partials) if t_partials else "", key=f"part_{t_id}")
                     with col_e3:
                         curr_opts = ["USD", "EUR", "CZK"]
                         new_curr = st.selectbox("Měna obchodu", curr_opts, index=curr_opts.index(t_curr) if t_curr in curr_opts else 0, key=f"curr_{t_id}")
+                    
+                    c_e1, c_e2, c_e3 = st.columns(3)
+                    with c_e1:
+                        new_partial_pnl = st.number_input(f"Partials PnL ({t_curr})", value=float(part_pnl_val), key=f"ppnl_{t_id}")
+                    with c_e2:
+                        new_initial_lots = st.number_input("Celkové Loty", value=float(t_init_lots), step=0.01, key=f"ilot_{t_id}")
+                    with c_e3:
+                        new_closed_lots = st.number_input("Odebrané Loty (Partials)", value=float(t_closed_lots), step=0.01, key=f"clot_{t_id}")
                     
                     update_trade_btn = st.form_submit_button("💾 Uložit změnu obchodu")
                     if update_trade_btn:
                         conn_ut = sqlite3.connect('trading_journal.db')
                         cursor_ut = conn_ut.cursor()
-                        cursor_ut.execute("UPDATE trades SET pnl_amount = ?, partial_pnl = ?, actual_r = ?, partials = ?, currency = ? WHERE id = ?", (new_pnl, new_partial_pnl, new_r, new_partials, new_curr, t_id))
+                        cursor_ut.execute("UPDATE trades SET pnl_amount = ?, partial_pnl = ?, actual_r = ?, initial_lots = ?, closed_lots = ?, currency = ? WHERE id = ?", (new_pnl, new_partial_pnl, new_r, new_initial_lots, new_closed_lots, new_curr, t_id))
                         conn_ut.commit()
                         conn_ut.close()
                         st.success("Obchod byl úspěšně aktualizován!")
@@ -381,7 +398,11 @@ with tab2:
                     st.write(f"- Signature: {'✅ Splněno' if t_sig else '❌ Nesplněno'}")
                     st.write(f"- Kvalifikace zóny: {'✅ Splněno' if t_zone else '❌ Nesplněno'}")
                     st.write(f"- Inverted Chart: {'✅ Použito' if t_inv else '❌ Běžný graf'}")
-                    st.write(f"- Partials (Loty): `{t_partials if t_partials else 'Žádné'}`")
+                    
+                    # Výpočet a zobrazení Lotů a % zbývajících v trhu
+                    rem_lots = t_init_lots - t_closed_lots
+                    rem_pct = (rem_lots / t_init_lots * 100) if t_init_lots > 0 else 0
+                    st.write(f"- **Řízení pozice (Loty):** Původně {t_init_lots} | Zavřeno {t_closed_lots} | **Zbývá {rem_lots:g} ({rem_pct:.1f} %)**")
                     
                     st.markdown("### 🧠 Poznámky a emoce")
                     st.info(t_notes if t_notes else "Žádné poznámky nebyly zadány.")
@@ -532,12 +553,12 @@ with tab4:
         
         conn_d = sqlite3.connect('trading_journal.db')
         dash_trades = pd.read_sql_query(
-            "SELECT id, ticker, direction, entry_time, actual_r, pnl_amount, htf_generals_check, market_phase, engine_ma_fan, signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart, partials, COALESCE(partial_pnl, 0.0) as partial_pnl, COALESCE(currency, 'USD') as currency FROM trades WHERE account_id = ? ORDER BY id ASC", 
+            "SELECT id, ticker, direction, entry_time, actual_r, pnl_amount, htf_generals_check, market_phase, engine_ma_fan, signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart, COALESCE(initial_lots, 0.0) as initial_lots, COALESCE(closed_lots, 0.0) as closed_lots, COALESCE(partial_pnl, 0.0) as partial_pnl, COALESCE(currency, 'USD') as currency FROM trades WHERE account_id = ? ORDER BY id ASC", 
             conn_d, params=(selected_acc_id,)
         )
         if dash_trades.empty:
             fallback_query = '''
-                SELECT t.id, t.ticker, t.direction, t.entry_time, t.actual_r, t.pnl_amount, t.htf_generals_check, t.market_phase, t.engine_ma_fan, t.signature_entry, t.fresh_zone, t.notes_emotions, t.image_data, t.inverted_chart, t.partials, COALESCE(t.partial_pnl, 0.0) as partial_pnl, COALESCE(t.currency, 'USD') as currency
+                SELECT t.id, t.ticker, t.direction, t.entry_time, t.actual_r, t.pnl_amount, t.htf_generals_check, t.market_phase, t.engine_ma_fan, t.signature_entry, t.fresh_zone, t.notes_emotions, t.image_data, t.inverted_chart, COALESCE(t.initial_lots, 0.0) as initial_lots, COALESCE(t.closed_lots, 0.0) as closed_lots, COALESCE(t.partial_pnl, 0.0) as partial_pnl, COALESCE(t.currency, 'USD') as currency
                 FROM trades t
                 LEFT JOIN accounts a ON t.account_id = a.id
                 WHERE TRIM(a.name) = ? ORDER BY t.id ASC
@@ -657,7 +678,7 @@ with tab4:
             if model and total_trades > 0:
                 with st.spinner("AI analyzuje tvá data a hledá klíčové patterny pro vylepšení..."):
                     recent_trades = dash_trades.tail(20)
-                    data_str = recent_trades[['ticker', 'direction', 'actual_r', 'total_trade_pnl', 'currency', 'htf_generals_check', 'engine_ma_fan', 'inverted_chart', 'partials']].to_json(orient='records')
+                    data_str = recent_trades[['ticker', 'direction', 'actual_r', 'total_trade_pnl', 'currency', 'htf_generals_check', 'engine_ma_fan', 'inverted_chart', 'initial_lots', 'closed_lots']].to_json(orient='records')
                     
                     prompt_coach = f"""
                     Jsi profesionální trading kouč zaměřený na strategii MentFX. Analyzuj těchto posledních pár obchodů klienta (data v JSON: {data_str}).
@@ -665,7 +686,7 @@ with tab4:
                     1. Dej mu stručnou, údernou a motivační zpětnou vazbu v češtině.
                     2. Vypíchni, co funguje dobře (např. dodržování pravidel jako MA fan).
                     3. Upozorni na to, kde ztrácí.
-                    4. Zhodnoť také vliv použití 'inverted_chart' (obráceného grafu) nebo 'partials', pokud ho využívá.
+                    4. Zhodnoť také vliv použití 'inverted_chart' (obráceného grafu) nebo výběru pozic (partials/closed_lots), pokud ho využívá.
                     Max 3-4 odstavce.
                     """
                     try:
@@ -730,8 +751,8 @@ with tab4:
                         INSERT INTO trades (
                             account_id, ticker, direction, entry_time, actual_r, pnl_amount,
                             htf_generals_check, market_phase, engine_ma_fan, 
-                            signature_entry, fresh_zone, notes_emotions, inverted_chart, partials, partial_pnl, currency
-                        ) VALUES (?, ?, ?, ?, ?, ?, 1, 'Kalendářní zápis', 1, 1, 1, 'Zapsáno přes kalendář', 0, '', 0.0, ?)
+                            signature_entry, fresh_zone, notes_emotions, inverted_chart, partial_pnl, currency, initial_lots, closed_lots
+                        ) VALUES (?, ?, ?, ?, ?, ?, 1, 'Kalendářní zápis', 1, 1, 1, 'Zapsáno přes kalendář', 0, 0.0, ?, 0.0, 0.0)
                     ''', (
                         selected_acc_id, q_ticker, q_dir, q_date.strftime("%Y-%m-%d %H:%M"), q_r, q_pnl, selected_acc_curr
                     ))
@@ -849,6 +870,8 @@ with tab4:
                     dt_r = dt['actual_r']
                     dt_curr = dt['currency']
                     dt_part_pnl = dt['partial_pnl']
+                    dt_init_lots = dt['initial_lots']
+                    dt_closed_lots = dt['closed_lots']
                     
                     try: parsed_dt = datetime.strptime(dt_time_str, "%Y-%m-%d %H:%M")
                     except ValueError: parsed_dt = datetime.now()
@@ -881,7 +904,12 @@ with tab4:
                             with e_col3:
                                 new_r = st.number_input("Dosažené R", value=float(dt_r), key=f"r_d_{dt_id}")
                                 new_dir = st.selectbox("Směr", ["Long", "Short"], index=0 if dt_dir=="Long" else 1, key=f"dir_{dt_id}")
-                                new_partials_d = st.text_input("Odebrané Loty", value=str(dt.get('partials', '')) if pd.notna(dt.get('partials')) else "", key=f"part_d_{dt_id}")
+                                
+                            c_d1, c_d2 = st.columns(2)
+                            with c_d1:
+                                new_initial_lots_d = st.number_input("Celkové Loty", value=float(dt_init_lots), step=0.01, key=f"ilot_d_{dt_id}")
+                            with c_d2:
+                                new_closed_lots_d = st.number_input("Odebrané Loty (Partials)", value=float(dt_closed_lots), step=0.01, key=f"clot_d_{dt_id}")
                                 
                             update_full_btn = st.form_submit_button("💾 Uložit změny")
                             if update_full_btn:
@@ -892,9 +920,9 @@ with tab4:
                                 cur_upd = conn_upd.cursor()
                                 cur_upd.execute('''
                                     UPDATE trades 
-                                    SET entry_time = ?, ticker = ?, direction = ?, pnl_amount = ?, partial_pnl = ?, actual_r = ?, partials = ? 
+                                    SET entry_time = ?, ticker = ?, direction = ?, pnl_amount = ?, partial_pnl = ?, actual_r = ?, initial_lots = ?, closed_lots = ? 
                                     WHERE id = ?
-                                ''', (new_full_datetime_str, new_ticker, new_dir, new_pnl, new_partial_pnl, new_r, new_partials_d, dt_id))
+                                ''', (new_full_datetime_str, new_ticker, new_dir, new_pnl, new_partial_pnl, new_r, new_initial_lots_d, new_closed_lots_d, dt_id))
                                 conn_upd.commit()
                                 conn_upd.close()
                                 st.success("Obchod byl úspěšně upraven a přesunut na nové datum!")
@@ -910,7 +938,11 @@ with tab4:
                             st.write(f"- Signature: {'✅' if dt.get('signature_entry') else '❌'}")
                             st.write(f"- Zóna: {'✅' if dt.get('fresh_zone') else '❌'}")
                             st.write(f"- Inverted Chart: {'✅' if dt.get('inverted_chart') else '❌'}")
-                            st.write(f"- Partials: `{dt.get('partials') if pd.notna(dt.get('partials')) and dt.get('partials') != '' else 'Žádné'}`")
+                            
+                            rem_lots_d = dt_init_lots - dt_closed_lots
+                            rem_pct_d = (rem_lots_d / dt_init_lots * 100) if dt_init_lots > 0 else 0
+                            st.write(f"- **Řízení pozice (Loty):** Původně {dt_init_lots} | Zavřeno {dt_closed_lots} | **Zbývá {rem_lots_d:g} ({rem_pct_d:.1f} %)**")
+                            st.info(f"**Poznámka:** {dt.get('notes_emotions', 'Žádné poznámky')}")
                         
                         with col_r:
                             if dt.get('image_data') is not None:
