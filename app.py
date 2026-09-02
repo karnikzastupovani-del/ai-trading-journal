@@ -66,7 +66,6 @@ def init_db():
         );
     ''')
     
-    # Bezpečné rozšíření stávající databáze o nové sloupce
     columns_to_add = [
         ("status", "TEXT DEFAULT 'Closed'"),
         ("risk_amount", "REAL DEFAULT 0.0"),
@@ -110,7 +109,7 @@ if API_KEY:
 else:
     model = None
 
-st.set_page_config(page_title="AI Trading Journal", layout="wide")
+st.set_page_config(page_title="Obchodní deník", layout="wide")
 
 # CSS styly
 st.markdown("""
@@ -123,20 +122,26 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📈 Můj AI Obchodní Deník")
+# --- HLAVNÍ NÁPIS ---
+st.title("📈 Obchodní deník")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "➕ Nový obchod (Vstup)", 
-    "⚙️ Řízení & Historie", 
-    "💼 Správa účtů", 
-    "📊 Dashboard & Kalendář",
-    "🌍 Ekonomický kalendář"
-])
+# --- POSTRANNÍ MENU (SIDEBAR) ---
+st.sidebar.title("📌 Navigace")
+menu_selection = st.sidebar.radio(
+    "Zvol sekci:",
+    [
+        "➕ Nový obchod (Vstup)", 
+        "⚙️ Řízení & Historie", 
+        "📊 Dashboard & Kalendář",
+        "🌍 Ekonomický kalendář",
+        "💼 Správa účtů"
+    ]
+)
 
 # ==========================================
-# ZÁLOŽKA 1: Nový obchod (Vstup)
+# SEKCE 1: Nový obchod (Vstup)
 # ==========================================
-with tab1:
+if menu_selection == "➕ Nový obchod (Vstup)":
     
     with st.expander("🧮 Kalkulačka velikosti pozice (Risk Management)"):
         c_col1, c_col2, c_col3, c_col4 = st.columns(4)
@@ -162,7 +167,7 @@ with tab1:
     conn.close()
     
     if accounts_df.empty:
-        st.warning("⚠️ Nejdříve si musíš vytvořit alespoň jeden obchodní účet v záložce 'Správa účtů'!")
+        st.warning("⚠️ Nejdříve si musíš vytvořit alespoň jeden obchodní účet v sekci 'Správa účtů'!")
     
     uploaded_files = st.file_uploader("Nahraj screenshoty grafu (PNG, JPG) - můžeš vybrat více najednou", type=["png", "jpg", "jpeg"], accept_multiple_files=True, key="main_upload")
     
@@ -185,13 +190,13 @@ with tab1:
             if not model:
                 st.error("⚠️ Model AI není nakonfigurován. Zkontroluj API klíč.")
             else:
-                with st.spinner("AI studuje tvůj graf podle Double MB modelu..."):
+                with st.spinner("AI studuje tvůj graf podle Double MB modelu (Buy/Sell)..."):
                     prompt = """
-                    Analyzuj tento tradingový graf podle MentFX Double MB modelu a vrať POUZE JSON s těmito klíči (true/false):
-                    1. "krok1_mb1": Došlo k flushnutí ceny a vytvoření bariéry (MB1)?
-                    2. "krok2_liq": Nastal pullback (náběr likvidity / návrat k EMA 5/10)?
-                    3. "krok3_fan": Je MA vějíř správně seřazen (5, 10, 20, 50)?
-                    4. "krok4_mb2": Došlo k průrazu MB2 (finální vstupní signál)?
+                    Analyzuj tento tradingový graf podle MentFX Double MB modelu. Setup může být buď pro BUY (Long) nebo SELL (Short). Vrať POUZE JSON s těmito klíči (true/false):
+                    1. "krok1_mb1": Došlo k flushnutí ceny a vytvoření první bariéry (MB1)?
+                    2. "krok2_liq": Nastal pullback (náběr likvidity / návrat k EMA)?
+                    3. "krok3_fan": Je MA vějíř správně seřazen pro daný směr (LONG: 5 nad 10 nad 20, SHORT: 5 pod 10 pod 20)?
+                    4. "krok4_mb2": Došlo k finálnímu průrazu MB2 (potvrzení vstupu)?
                     """
                     try:
                         first_image = Image.open(io.BytesIO(prepared_images[0][0]))
@@ -263,12 +268,11 @@ with tab1:
                 conn = sqlite3.connect('trading_journal.db')
                 cursor = conn.cursor()
                 
-                # Zapisujeme mechanický checklist do existujících boolean sloupců (aby se neměnila struktura DB)
                 cursor.execute('''
                     INSERT INTO trades (
                         account_id, ticker, direction, entry_time, actual_r, pnl_amount,
-                        htf_generals_check, fresh_zone, engine_ma_fan, signature_entry,
-                        market_phase, notes_emotions, image_data, inverted_chart, 
+                        htf_generals_check, market_phase, engine_ma_fan, 
+                        signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart, 
                         partial_pnl, currency, initial_lots, closed_lots, status, risk_amount, 
                         sl_be_value, partials_log, main_image_label, post_trade_notes, trading_session, emotion_score
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -288,12 +292,13 @@ with tab1:
                 
                 conn.commit()
                 conn.close()
-                st.success("🎉 Obchod otevřen a obrázky uloženy! Najdeš ho v záložce 'Řízení & Historie'.")
+                st.success("🎉 Obchod otevřen a obrázky uloženy! Najdeš ho v sekci 'Řízení & Historie'.")
+
 
 # ==========================================
-# ZÁLOŽKA 2: Řízení & Historie
+# SEKCE 2: Řízení & Historie
 # ==========================================
-with tab2:
+elif menu_selection == "⚙️ Řízení & Historie":
     
     conn = sqlite3.connect('trading_journal.db')
     cursor = conn.cursor()
@@ -608,97 +613,11 @@ with tab2:
                                 conn_in.close()
                                 st.rerun()
 
-# ==========================================
-# ZÁLOŽKA 3: Správa účtů
-# ==========================================
-with tab3:
-    st.subheader("💼 Správa obchodních účtů")
-    
-    with st.expander("➕ Vytvořit nový účet"):
-        with st.form("new_account_form"):
-            col_a1, col_a2, col_a3 = st.columns(3)
-            with col_a1:
-                acc_name = st.text_input("Název účtu (např. Mentfunding)")
-            with col_a2:
-                acc_initial = st.number_input("Základní / Počáteční kapitál", value=200000.0)
-            with col_a3:
-                acc_currency = st.selectbox("Měna účtu", ["USD", "EUR", "CZK"])
-                
-            acc_submit = st.form_submit_button("Vytvořit účet")
-            if acc_submit:
-                clean_name = acc_name.strip()
-                if clean_name == "":
-                    st.error("Zadej platný název účtu!")
-                else:
-                    try:
-                        conn = sqlite3.connect('trading_journal.db')
-                        cursor = conn.cursor()
-                        cursor.execute("INSERT INTO accounts (name, initial_balance, currency) VALUES (?, ?, ?)", (clean_name, acc_initial, acc_currency))
-                        conn.commit()
-                        conn.close()
-                        st.success(f"Účet '{clean_name}' byl úspěšně vytvořen v {acc_currency}!")
-                        st.rerun()
-                    except sqlite3.IntegrityError:
-                        st.error("Účet s tímto názvem již existuje!")
-
-    st.markdown("---")
-    st.subheader("📊 Seznam účtů a úprava základů")
-    
-    conn = sqlite3.connect('trading_journal.db')
-    accounts_summary_query = '''
-        SELECT a.id, a.name, a.initial_balance, COALESCE(a.currency, 'USD') as currency,
-               COALESCE(SUM(t.pnl_amount + COALESCE(t.partial_pnl, 0.0)), 0) as total_pnl,
-               COUNT(t.id) as trade_count
-        FROM accounts a
-        LEFT JOIN trades t ON a.id = t.account_id
-        GROUP BY a.id
-    '''
-    acc_df = pd.read_sql_query(accounts_summary_query, conn)
-    conn.close()
-    
-    if acc_df.empty:
-        st.info("Zatím tu nemáš vytvořené žádné účty.")
-    else:
-        for index, row in acc_df.iterrows():
-            acc_id = row['id']
-            acc_name = str(row['name']).strip()
-            current_initial = row['initial_balance']
-            acc_curr = row['currency']
-            total_pnl = row['total_pnl']
-            calculated_balance = current_initial + total_pnl
-            sym = get_sym(acc_curr)
-            
-            with st.container():
-                st.markdown(f"### 🏦 Účet: {acc_name} ({acc_curr})")
-                col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-                col_m1.metric("Základní vklad", f"{sym}{current_initial:,.2f}")
-                col_m2.metric("Celkový PnL (vč. Otevřených)", f"{sym}{total_pnl:+,.2f}")
-                col_m3.metric("Aktuální stav", f"{sym}{calculated_balance:,.2f}")
-                col_m4.metric("Počet obchodů", row['trade_count'])
-                
-                with st.form(key=f"edit_acc_{acc_id}"):
-                    c_ed1, c_ed2 = st.columns(2)
-                    with c_ed1:
-                        new_base = st.number_input(f"Upravit základ:", value=float(current_initial), key=f"val_{acc_id}")
-                    with c_ed2:
-                        curr_opts = ["USD", "EUR", "CZK"]
-                        new_acc_curr = st.selectbox("Změnit měnu účtu:", curr_opts, index=curr_opts.index(acc_curr) if acc_curr in curr_opts else 0, key=f"curr_acc_{acc_id}")
-                    
-                    update_btn = st.form_submit_button(f"💾 Uložit změny pro {acc_name}")
-                    if update_btn:
-                        conn_up = sqlite3.connect('trading_journal.db')
-                        cursor_up = conn_up.cursor()
-                        cursor_up.execute("UPDATE accounts SET initial_balance = ?, currency = ? WHERE id = ?", (new_base, new_acc_curr, acc_id))
-                        conn_up.commit()
-                        conn_up.close()
-                        st.success(f"Základ pro účet '{acc_name}' byl aktualizován!")
-                        st.rerun()
-                st.markdown("---")
 
 # ==========================================
-# ZÁLOŽKA 4: Dashboard, Statistiky & Kalendář
+# SEKCE 3: Dashboard & Kalendář
 # ==========================================
-with tab4:
+elif menu_selection == "📊 Dashboard & Kalendář":
     st.subheader("📊 Výkonnostní Dashboard & Statistiky")
     
     conn = sqlite3.connect('trading_journal.db')
@@ -706,7 +625,7 @@ with tab4:
     conn.close()
     
     if acc_dash_df.empty:
-        st.info("Nejprve si vytvoř alespoň jeden účet v záložce 'Správa účtů'.")
+        st.info("Nejprve si vytvoř alespoň jeden účet v sekci 'Správa účtů'.")
     else:
         acc_dash_df['clean_name'] = acc_dash_df['name'].str.strip()
         dash_account_name = st.selectbox("Vyber účet pro zobrazení detailu", acc_dash_df['clean_name'], key="dash_acc_select")
@@ -845,12 +764,13 @@ with tab4:
                     data_str = recent_trades[['ticker', 'direction', 'actual_r', 'total_trade_pnl', 'currency', 'htf_generals_check', 'fresh_zone', 'engine_ma_fan', 'signature_entry', 'inverted_chart', 'trading_session', 'emotion_score']].to_json(orient='records')
                     
                     prompt_coach = f"""
-                    Jsi profesionální trading kouč zaměřený na strategii MentFX (Double MB model). Analyzuj posledních pár uzavřených obchodů klienta (data v JSON: {data_str}).
+                    Jsi profesionální trading kouč zaměřený na strategii MentFX. Analyzuj těchto posledních pár uzavřených obchodů klienta (data v JSON: {data_str}).
                     Tvůj úkol:
-                    1. Dej mu stručnou a motivační zpětnou vazbu.
-                    2. Upozorni na to, kde ztrácí a kde vydělává.
-                    3. Analyzuj vliv 'emotion_score' (1-10) a 'trading_session' na jeho úspěšnost. Ovlivňuje psychika výkon?
-                    Max 3-4 odstavce v češtině.
+                    1. Dej mu stručnou, údernou a motivační zpětnou vazbu v češtině.
+                    2. Vypíchni, co funguje dobře (např. dodržování pravidel jako MA fan).
+                    3. Upozorni na to, kde ztrácí.
+                    4. Zhodnoť vliv 'emotion_score' (1-10) a 'trading_session' na jeho úspěšnost.
+                    Max 3-4 odstavce.
                     """
                     try:
                         resp = model.generate_content(prompt_coach)
@@ -1057,7 +977,7 @@ with tab4:
                     header_str = f"{badge} Obchod #{dt_id} | Čas: {dt_time_str} | Pár: {dt_ticker} ({dt_dir}) | Celkový PnL: {total_day_pnl:+,.2f} {dt_curr} ({trade_pct_item:+.2f}%)"
                     
                     with st.expander(header_str):
-                        st.info(f"Tento obchod je momentálně ve stavu: **{dt_status}**. Pro detailní úpravu parametrů běž do záložky 'Řízení & Historie'.")
+                        st.info(f"Tento obchod je momentálně ve stavu: **{dt_status}**. Pro detailní úpravu parametrů běž do sekce 'Řízení & Historie'.")
                         
                         col_l, col_r = st.columns(2)
                         with col_l:
@@ -1149,10 +1069,11 @@ with tab4:
             except Exception:
                 pass
 
+
 # ==========================================
-# ZÁLOŽKA 5: Ekonomický kalendář
+# SEKCE 4: Ekonomický kalendář
 # ==========================================
-with tab5:
+elif menu_selection == "🌍 Ekonomický kalendář":
     st.subheader("🌍 Živý ekonomický kalendář")
     st.write("Přehled makroekonomických zpráv v češtině, přizpůsobený na tvůj místní čas (Evropa/Praha).")
     
@@ -1175,3 +1096,91 @@ with tab5:
     """
     
     components.html(calendar_html, height=670)
+
+
+# ==========================================
+# SEKCE 5: Správa účtů
+# ==========================================
+elif menu_selection == "💼 Správa účtů":
+    st.subheader("💼 Správa obchodních účtů")
+    
+    with st.expander("➕ Vytvořit nový účet"):
+        with st.form("new_account_form"):
+            col_a1, col_a2, col_a3 = st.columns(3)
+            with col_a1:
+                acc_name = st.text_input("Název účtu (např. Mentfunding)")
+            with col_a2:
+                acc_initial = st.number_input("Základní / Počáteční kapitál", value=200000.0)
+            with col_a3:
+                acc_currency = st.selectbox("Měna účtu", ["USD", "EUR", "CZK"])
+                
+            acc_submit = st.form_submit_button("Vytvořit účet")
+            if acc_submit:
+                clean_name = acc_name.strip()
+                if clean_name == "":
+                    st.error("Zadej platný název účtu!")
+                else:
+                    try:
+                        conn = sqlite3.connect('trading_journal.db')
+                        cursor = conn.cursor()
+                        cursor.execute("INSERT INTO accounts (name, initial_balance, currency) VALUES (?, ?, ?)", (clean_name, acc_initial, acc_currency))
+                        conn.commit()
+                        conn.close()
+                        st.success(f"Účet '{clean_name}' byl úspěšně vytvořen v {acc_currency}!")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("Účet s tímto názvem již existuje!")
+
+    st.markdown("---")
+    st.subheader("📊 Seznam účtů a úprava základů")
+    
+    conn = sqlite3.connect('trading_journal.db')
+    accounts_summary_query = '''
+        SELECT a.id, a.name, a.initial_balance, COALESCE(a.currency, 'USD') as currency,
+               COALESCE(SUM(t.pnl_amount + COALESCE(t.partial_pnl, 0.0)), 0) as total_pnl,
+               COUNT(t.id) as trade_count
+        FROM accounts a
+        LEFT JOIN trades t ON a.id = t.account_id
+        GROUP BY a.id
+    '''
+    acc_df = pd.read_sql_query(accounts_summary_query, conn)
+    conn.close()
+    
+    if acc_df.empty:
+        st.info("Zatím tu nemáš vytvořené žádné účty.")
+    else:
+        for index, row in acc_df.iterrows():
+            acc_id = row['id']
+            acc_name = str(row['name']).strip()
+            current_initial = row['initial_balance']
+            acc_curr = row['currency']
+            total_pnl = row['total_pnl']
+            calculated_balance = current_initial + total_pnl
+            sym = get_sym(acc_curr)
+            
+            with st.container():
+                st.markdown(f"### 🏦 Účet: {acc_name} ({acc_curr})")
+                col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                col_m1.metric("Základní vklad", f"{sym}{current_initial:,.2f}")
+                col_m2.metric("Celkový PnL (vč. Otevřených)", f"{sym}{total_pnl:+,.2f}")
+                col_m3.metric("Aktuální stav", f"{sym}{calculated_balance:,.2f}")
+                col_m4.metric("Počet obchodů", row['trade_count'])
+                
+                with st.form(key=f"edit_acc_{acc_id}"):
+                    c_ed1, c_ed2 = st.columns(2)
+                    with c_ed1:
+                        new_base = st.number_input(f"Upravit základ:", value=float(current_initial), key=f"val_{acc_id}")
+                    with c_ed2:
+                        curr_opts = ["USD", "EUR", "CZK"]
+                        new_acc_curr = st.selectbox("Změnit měnu účtu:", curr_opts, index=curr_opts.index(acc_curr) if acc_curr in curr_opts else 0, key=f"curr_acc_{acc_id}")
+                    
+                    update_btn = st.form_submit_button(f"💾 Uložit změny pro {acc_name}")
+                    if update_btn:
+                        conn_up = sqlite3.connect('trading_journal.db')
+                        cursor_up = conn_up.cursor()
+                        cursor_up.execute("UPDATE accounts SET initial_balance = ?, currency = ? WHERE id = ?", (new_base, new_acc_curr, acc_id))
+                        conn_up.commit()
+                        conn_up.close()
+                        st.success(f"Základ pro účet '{acc_name}' byl aktualizován!")
+                        st.rerun()
+                st.markdown("---")
