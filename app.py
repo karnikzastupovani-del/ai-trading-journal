@@ -11,6 +11,13 @@ import plotly.graph_objects as go
 import plotly.express as px
 import streamlit.components.v1 as components
 
+# Pro správný výpočet seance dle našeho času
+try:
+    import zoneinfo
+    prague_tz = zoneinfo.ZoneInfo("Europe/Prague")
+except Exception:
+    prague_tz = None
+
 # --- POMOCNÁ FUNKCE PRO MĚNOVÉ SYMBOLY ---
 def get_sym(curr):
     if curr == "EUR": return "€"
@@ -60,34 +67,30 @@ def init_db():
     ''')
     
     # Bezpečné rozšíření stávající databáze o nové sloupce
-    try: cursor.execute("ALTER TABLE trades ADD COLUMN status TEXT DEFAULT 'Closed';")
-    except sqlite3.OperationalError: pass
-    try: cursor.execute("ALTER TABLE trades ADD COLUMN risk_amount REAL DEFAULT 0.0;")
-    except sqlite3.OperationalError: pass
-    try: cursor.execute("ALTER TABLE trades ADD COLUMN sl_be_value REAL DEFAULT 0.0;")
-    except sqlite3.OperationalError: pass
-    try: cursor.execute("ALTER TABLE trades ADD COLUMN partials_log TEXT DEFAULT '';")
-    except sqlite3.OperationalError: pass
-    try: cursor.execute("ALTER TABLE trades ADD COLUMN account_id INTEGER;")
-    except sqlite3.OperationalError: pass
-    try: cursor.execute("ALTER TABLE trades ADD COLUMN inverted_chart BOOLEAN DEFAULT 0;")
-    except sqlite3.OperationalError: pass
-    try: cursor.execute("ALTER TABLE trades ADD COLUMN partial_pnl REAL DEFAULT 0.0;")
-    except sqlite3.OperationalError: pass
+    columns_to_add = [
+        ("status", "TEXT DEFAULT 'Closed'"),
+        ("risk_amount", "REAL DEFAULT 0.0"),
+        ("sl_be_value", "REAL DEFAULT 0.0"),
+        ("partials_log", "TEXT DEFAULT ''"),
+        ("account_id", "INTEGER"),
+        ("inverted_chart", "BOOLEAN DEFAULT 0"),
+        ("partial_pnl", "REAL DEFAULT 0.0"),
+        ("currency", "TEXT DEFAULT 'USD'"),
+        ("initial_lots", "REAL DEFAULT 0.0"),
+        ("closed_lots", "REAL DEFAULT 0.0"),
+        ("main_image_label", "TEXT DEFAULT 'Vstupní graf'"),
+        ("post_trade_notes", "TEXT DEFAULT ''"),
+        ("trading_session", "TEXT DEFAULT 'Neznámá'"),
+        ("emotion_score", "INTEGER DEFAULT 5")
+    ]
+    
+    for col, dtype in columns_to_add:
+        try: cursor.execute(f"ALTER TABLE trades ADD COLUMN {col} {dtype};")
+        except sqlite3.OperationalError: pass
+        
     try: cursor.execute("ALTER TABLE accounts ADD COLUMN currency TEXT DEFAULT 'USD';")
     except sqlite3.OperationalError: pass
-    try: cursor.execute("ALTER TABLE trades ADD COLUMN currency TEXT DEFAULT 'USD';")
-    except sqlite3.OperationalError: pass
-    try: cursor.execute("ALTER TABLE trades ADD COLUMN initial_lots REAL DEFAULT 0.0;")
-    except sqlite3.OperationalError: pass
-    try: cursor.execute("ALTER TABLE trades ADD COLUMN closed_lots REAL DEFAULT 0.0;")
-    except sqlite3.OperationalError: pass
-    try: cursor.execute("ALTER TABLE trades ADD COLUMN main_image_label TEXT DEFAULT 'Vstupní graf';")
-    except sqlite3.OperationalError: pass
     try: cursor.execute("ALTER TABLE trade_images ADD COLUMN image_label TEXT DEFAULT 'Screenshot';")
-    except sqlite3.OperationalError: pass
-    # Nový sloupec pro závěrečnou reflexi
-    try: cursor.execute("ALTER TABLE trades ADD COLUMN post_trade_notes TEXT DEFAULT '';")
     except sqlite3.OperationalError: pass
         
     conn.commit()
@@ -203,6 +206,19 @@ with tab1:
     if prepared_images and not accounts_df.empty:
         data = st.session_state.ai_data if "ai_data" in st.session_state and st.session_state.ai_data else {}
         
+        # --- Logika pro automatickou seanci podle Prahy ---
+        if prague_tz:
+            cur_h = datetime.now(prague_tz).hour
+        else:
+            cur_h = datetime.now().hour # Fallback
+            
+        if 8 <= cur_h < 13: def_sess = "Londýn (Evropa)"
+        elif 13 <= cur_h < 17: def_sess = "Londýn + New York (Překryv)"
+        elif 17 <= cur_h < 22: def_sess = "New York (USA)"
+        else: def_sess = "Asie / Sydney"
+        
+        sess_opts = ["Asie / Sydney", "Londýn (Evropa)", "Londýn + New York (Překryv)", "New York (USA)", "Mimo hlavní (Chop)"]
+        
         st.markdown("---")
         st.subheader("📝 Vstupní detaily obchodu")
         
@@ -216,13 +232,18 @@ with tab1:
                 ticker = st.text_input("Ticker / Pár", value="GBP/JPY")
                 direction = st.selectbox("Směr", ["Long", "Short"])
             with c2:
-                risk_input = st.number_input("Riskovaná částka (Původní risk v penězích)", value=-2000.0, step=100.0)
+                risk_input = st.number_input("Riskovaná částka (v penězích)", value=-2000.0, step=100.0)
                 lots_input = st.number_input("Celková velikost pozice (Loty)", value=15.0, step=0.1)
             with c3:
                 curr_list = ["USD", "EUR", "CZK"]
                 def_idx = curr_list.index(selected_acc_curr) if selected_acc_curr in curr_list else 0
                 trade_currency = st.selectbox("Měna obchodu", curr_list, index=def_idx)
+                trading_session = st.selectbox("Obchodní seance", sess_opts, index=sess_opts.index(def_sess) if def_sess in sess_opts else 0)
                 
+            st.markdown("---")
+            st.markdown("**🧠 Hodnocení kvality a emocí při vstupu**")
+            emotion_score = st.slider("Jak dobrý je tento setup? (1 = FOMO / Špatný, 10 = Učebnicový A+ Setup)", min_value=1, max_value=10, value=8)
+            
             st.markdown("---")
             htf_check = st.checkbox("Generals' check (EMA 5, 10, 20 & daily MB)", value=data.get("htf_context", False))
             market_phase = st.text_input("Fáze trhu", value=data.get("market_phase", "Contain line"))
@@ -245,14 +266,16 @@ with tab1:
                         account_id, ticker, direction, entry_time, actual_r, pnl_amount,
                         htf_generals_check, market_phase, engine_ma_fan, 
                         signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart, 
-                        partial_pnl, currency, initial_lots, closed_lots, status, risk_amount, sl_be_value, partials_log, main_image_label, post_trade_notes
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        partial_pnl, currency, initial_lots, closed_lots, status, risk_amount, 
+                        sl_be_value, partials_log, main_image_label, post_trade_notes, trading_session, emotion_score
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     selected_acc_id, ticker, direction, datetime.now().strftime("%Y-%m-%d %H:%M"), 
                     0.0, 0.0,
                     htf_check, market_phase, engine_check, signature_check, 
                     zone_check, notes, prepared_images[0][0], inverted_chart_check, 
-                    0.0, trade_currency, lots_input, 0.0, 'Open', risk_input, risk_input, "", prepared_images[0][1], ""
+                    0.0, trade_currency, lots_input, 0.0, 'Open', risk_input, 
+                    risk_input, "", prepared_images[0][1], "", trading_session, emotion_score
                 ))
                 trade_id = cursor.lastrowid
                 
@@ -278,7 +301,7 @@ with tab2:
                COALESCE(t.partial_pnl, 0.0), COALESCE(t.currency, 'USD'), COALESCE(t.initial_lots, 0.0), 
                COALESCE(t.closed_lots, 0.0), COALESCE(t.status, 'Closed'), COALESCE(t.risk_amount, 0.0), 
                COALESCE(t.sl_be_value, 0.0), COALESCE(t.partials_log, ''), COALESCE(t.main_image_label, 'Vstupní graf'),
-               COALESCE(t.post_trade_notes, '')
+               COALESCE(t.post_trade_notes, ''), COALESCE(t.trading_session, 'Neznámá'), COALESCE(t.emotion_score, 5)
         FROM trades t
         LEFT JOIN accounts a ON t.account_id = a.id
         ORDER BY t.id DESC
@@ -310,7 +333,7 @@ with tab2:
         for t in open_trades:
             (t_id, t_acc_name, t_acc_init, t_ticker, t_dir, t_time, t_r, t_pnl, 
              t_htf, t_phase, t_eng, t_sig, t_zone, t_notes, t_img, t_acc_id, t_inv, 
-             t_part_pnl, t_curr, t_init_lots, t_closed_lots, t_status, t_risk, t_sl_val, t_part_log, t_main_img_label, t_post_notes) = t
+             t_part_pnl, t_curr, t_init_lots, t_closed_lots, t_status, t_risk, t_sl_val, t_part_log, t_main_img_label, t_post_notes, t_sess, t_emo) = t
             
             clean_acc_name = str(t_acc_name).strip() if t_acc_name else "Neznámý účet"
             rem_lots = t_init_lots - t_closed_lots
@@ -396,6 +419,7 @@ with tab2:
                 col_left, col_right = st.columns(2)
                 with col_left:
                     st.markdown("### 📋 Parametry vstupu")
+                    st.write(f"**Seance:** `{t_sess}` | **Hodnocení setupu:** `{t_emo}/10`")
                     st.write(f"**Fáze trhu:** `{t_phase}`")
                     st.write(f"- Generals' check: {'✅' if t_htf else '❌'}")
                     st.write(f"- Engine MA Fan: {'✅' if t_eng else '❌'}")
@@ -483,7 +507,7 @@ with tab2:
         for t in closed_trades:
             (t_id, t_acc_name, t_acc_init, t_ticker, t_dir, t_time, t_r, t_pnl, 
              t_htf, t_phase, t_eng, t_sig, t_zone, t_notes, t_img, t_acc_id, t_inv, 
-             t_part_pnl, t_curr, t_init_lots, t_closed_lots, t_status, t_risk, t_sl_val, t_part_log, t_main_img_label, t_post_notes) = t
+             t_part_pnl, t_curr, t_init_lots, t_closed_lots, t_status, t_risk, t_sl_val, t_part_log, t_main_img_label, t_post_notes, t_sess, t_emo) = t
             
             clean_acc_name = str(t_acc_name).strip() if t_acc_name else "Neznámý účet"
             init_b = t_acc_init if t_acc_init and t_acc_init > 0 else 200000.0
@@ -509,11 +533,12 @@ with tab2:
                 
                 with col_left:
                     st.markdown("### 📋 Výsledek a parametry")
-                    st.markdown(f"**Hlavní PnL ze zbytku pozice (např. zasažený SL/BE/TP):** {sym}{t_pnl:,.2f}")
+                    st.markdown(f"**Hlavní PnL ze zbytku pozice:** {sym}{t_pnl:,.2f}")
                     st.markdown(f"**Zisk z Partials:** {sym}{t_part_pnl:,.2f}")
                     st.markdown(f"### 💰 CELKOVÝ VÝSLEDEK: {sym}{total_trade_pnl:,.2f}")
                         
                     st.write("---")
+                    st.write(f"**Seance:** `{t_sess}` | **Hodnocení setupu:** `{t_emo}/10`")
                     st.write(f"**Fáze trhu:** `{t_phase}`")
                     st.write(f"- Generals' check: {'✅ Splněno' if t_htf else '❌ Nesplněno'}")
                     st.write(f"- Engine MA Fan: {'✅ Splněno' if t_eng else '❌ Nesplněno'}")
@@ -692,18 +717,13 @@ with tab4:
         sym = get_sym(selected_acc_curr)
         
         conn_d = sqlite3.connect('trading_journal.db')
-        dash_trades = pd.read_sql_query(
-            "SELECT id, ticker, direction, entry_time, actual_r, pnl_amount, htf_generals_check, market_phase, engine_ma_fan, signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart, COALESCE(initial_lots, 0.0) as initial_lots, COALESCE(closed_lots, 0.0) as closed_lots, COALESCE(partial_pnl, 0.0) as partial_pnl, COALESCE(currency, 'USD') as currency, COALESCE(status, 'Closed') as status, COALESCE(partials_log, '') as partials_log, COALESCE(main_image_label, 'Vstupní graf') as main_image_label, COALESCE(post_trade_notes, '') as post_trade_notes FROM trades WHERE account_id = ? ORDER BY id ASC", 
-            conn_d, params=(selected_acc_id,)
-        )
-        if dash_trades.empty:
-            fallback_query = '''
-                SELECT t.id, t.ticker, t.direction, t.entry_time, t.actual_r, t.pnl_amount, t.htf_generals_check, t.market_phase, t.engine_ma_fan, t.signature_entry, t.fresh_zone, t.notes_emotions, t.image_data, t.inverted_chart, COALESCE(t.initial_lots, 0.0) as initial_lots, COALESCE(t.closed_lots, 0.0) as closed_lots, COALESCE(t.partial_pnl, 0.0) as partial_pnl, COALESCE(t.currency, 'USD') as currency, COALESCE(t.status, 'Closed') as status, COALESCE(t.partials_log, '') as partials_log, COALESCE(t.main_image_label, 'Vstupní graf') as main_image_label, COALESCE(t.post_trade_notes, '') as post_trade_notes
-                FROM trades t
-                LEFT JOIN accounts a ON t.account_id = a.id
-                WHERE TRIM(a.name) = ? ORDER BY t.id ASC
-            '''
-            dash_trades = pd.read_sql_query(fallback_query, conn_d, params=(dash_account_name,))
+        fallback_query = '''
+            SELECT t.id, t.ticker, t.direction, t.entry_time, t.actual_r, t.pnl_amount, t.htf_generals_check, t.market_phase, t.engine_ma_fan, t.signature_entry, t.fresh_zone, t.notes_emotions, t.image_data, t.inverted_chart, COALESCE(t.initial_lots, 0.0) as initial_lots, COALESCE(t.closed_lots, 0.0) as closed_lots, COALESCE(t.partial_pnl, 0.0) as partial_pnl, COALESCE(t.currency, 'USD') as currency, COALESCE(t.status, 'Closed') as status, COALESCE(t.partials_log, '') as partials_log, COALESCE(t.main_image_label, 'Vstupní graf') as main_image_label, COALESCE(t.post_trade_notes, '') as post_trade_notes, COALESCE(t.trading_session, 'Neznámá') as trading_session, COALESCE(t.emotion_score, 5) as emotion_score
+            FROM trades t
+            LEFT JOIN accounts a ON t.account_id = a.id
+            WHERE TRIM(a.name) = ? ORDER BY t.id ASC
+        '''
+        dash_trades = pd.read_sql_query(fallback_query, conn_d, params=(dash_account_name,))
         conn_d.close()
         
         closed_dash_trades = dash_trades[dash_trades['status'] == 'Closed'].copy()
@@ -821,7 +841,7 @@ with tab4:
             if model and total_closed_trades > 0:
                 with st.spinner("AI analyzuje tvá data a hledá klíčové patterny pro vylepšení..."):
                     recent_trades = closed_dash_trades.tail(20)
-                    data_str = recent_trades[['ticker', 'direction', 'actual_r', 'total_trade_pnl', 'currency', 'htf_generals_check', 'engine_ma_fan', 'inverted_chart']].to_json(orient='records')
+                    data_str = recent_trades[['ticker', 'direction', 'actual_r', 'total_trade_pnl', 'currency', 'htf_generals_check', 'engine_ma_fan', 'inverted_chart', 'trading_session', 'emotion_score']].to_json(orient='records')
                     
                     prompt_coach = f"""
                     Jsi profesionální trading kouč zaměřený na strategii MentFX. Analyzuj těchto posledních pár uzavřených obchodů klienta (data v JSON: {data_str}).
@@ -829,7 +849,7 @@ with tab4:
                     1. Dej mu stručnou, údernou a motivační zpětnou vazbu v češtině.
                     2. Vypíchni, co funguje dobře (např. dodržování pravidel jako MA fan).
                     3. Upozorni na to, kde ztrácí.
-                    4. Zhodnoť také vliv použití 'inverted_chart' (obráceného grafu).
+                    4. Analyzuj také vliv 'emotion_score' (1-10) a 'trading_session' na jeho úspěšnost.
                     Max 3-4 odstavce.
                     """
                     try:
@@ -918,8 +938,8 @@ with tab4:
         else:
             pnl_by_date = {}
 
-        days_header = ["Pondělí", "Úterý", "Středa", "Čtvrtek", "Pátek", "Sobota", "Neděle"]
-        header_cols = st.columns(7)
+        days_header = ["Pondělí", "Úterý", "Středa", "Čtvrtek", "Pátek", "Sobota", "Neděle", "📅 TÝDEN"]
+        header_cols = st.columns(8)
         for idx, day_name in enumerate(days_header):
             header_cols[idx].markdown(f"<div class='cal-day-header'>{day_name}</div>", unsafe_allow_html=True)
 
@@ -927,7 +947,10 @@ with tab4:
         month_weeks = cal.monthdayscalendar(st.session_state.cal_year, st.session_state.cal_month)
 
         for week in month_weeks:
-            week_cols = st.columns(7)
+            week_cols = st.columns(8)
+            week_pnl = 0.0
+            week_trades = 0
+            
             for idx, day_num in enumerate(week):
                 with week_cols[idx]:
                     if day_num == 0:
@@ -941,6 +964,9 @@ with tab4:
                             dpnl = data['daily_pnl']
                             tcount = data['trade_count']
                             wrate = data['win_rate']
+                            
+                            week_pnl += dpnl
+                            week_trades += tcount
                             
                             card_class = "cal-card-green" if dpnl >= 0 else "cal-card-red"
                             znamenko = "+" if dpnl >= 0 else ""
@@ -959,6 +985,45 @@ with tab4:
                                     <div style="font-size: 14px; color: #484f58; margin-top: 15px;">–</div>
                                 </div>
                             """, unsafe_allow_html=True)
+
+            # Týdenní součet (8. sloupec)
+            with week_cols[7]:
+                if week_trades > 0:
+                    w_class = "cal-card-green" if week_pnl >= 0 else "cal-card-red"
+                    w_sign = "+" if week_pnl >= 0 else ""
+                    st.markdown(f"""
+                        <div class="{w_class}" style="border-style: dashed; border-width: 2px;">
+                            <div style="font-size: 11px; color: #8b949e; font-weight: bold; text-transform: uppercase;">Součet týdne</div>
+                            <div style="font-size: 16px; font-weight: bold; margin: 4px 0;">{w_sign}{sym}{week_pnl:,.2f}</div>
+                            <div style="font-size: 11px; color: #c9d1d9;">{week_trades} obchod(ů)</div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown(f"""
+                        <div style="background-color: rgba(139, 148, 158, 0.05); border: 1px dashed #30363d; border-radius: 8px; padding: 12px; text-align: center; height: 95px; margin-bottom: 8px;">
+                            <div style="font-size: 11px; color: #8b949e; font-weight: bold; text-transform: uppercase;">Součet týdne</div>
+                            <div style="font-size: 14px; color: #484f58; margin-top: 15px;">–</div>
+                        </div>
+                    """, unsafe_allow_html=True)
+
+        # Měsíční součet (Spodek kalendáře)
+        month_pnl = 0.0
+        month_trades = 0
+        for d, data in pnl_by_date.items():
+            if d.year == st.session_state.cal_year and d.month == st.session_state.cal_month:
+                month_pnl += data['daily_pnl']
+                month_trades += data['trade_count']
+
+        st.markdown("---")
+        m_color = "#2ea043" if month_pnl >= 0 else "#da3633"
+        m_sign = "+" if month_pnl >= 0 else ""
+        st.markdown(f"""
+            <div style="background-color: rgba(0,0,0,0.2); border: 1px solid #30363d; border-radius: 10px; padding: 20px; text-align: center;">
+                <h3 style="margin:0; color: #8b949e;">Měsíční výsledek ({months_cz[st.session_state.cal_month]} {st.session_state.cal_year})</h3>
+                <h1 style="margin: 10px 0; color: {m_color};">{m_sign}{sym}{month_pnl:,.2f}</h1>
+                <p style="margin:0; color: #c9d1d9; font-size: 16px;">Celkem uzavřených obchodů: <b>{month_trades}</b></p>
+            </div>
+        """, unsafe_allow_html=True)
 
         # --- OBNOVENÝ DETAIL DNE POD KALENDÁŘEM (Nyní plné zobrazení) ---
         st.markdown("---")
@@ -1001,6 +1066,7 @@ with tab4:
                             st.write(f"**Zisk z Partials:** {dt['partial_pnl']:.2f} {dt_curr}")
                             st.markdown(f"### 💰 CELKOVÝ VÝSLEDEK: {dt_curr} {total_day_pnl:,.2f}")
                             st.write("---")
+                            st.write(f"**Seance:** `{dt.get('trading_session', 'Neznámá')}` | **Hodnocení setupu:** `{dt.get('emotion_score', 5)}/10`")
                             st.write(f"**Fáze trhu:** `{dt.get('market_phase', 'N/A')}`")
                             st.write(f"- Generals' check: {'✅' if dt.get('htf_generals_check') else '❌'}")
                             st.write(f"- Engine MA Fan: {'✅' if dt.get('engine_ma_fan') else '❌'}")
