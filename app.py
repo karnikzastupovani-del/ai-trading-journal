@@ -185,32 +185,30 @@ with tab1:
             if not model:
                 st.error("⚠️ Model AI není nakonfigurován. Zkontroluj API klíč.")
             else:
-                with st.spinner("AI studuje strukturu trhu a MA vějíř..."):
+                with st.spinner("AI studuje tvůj graf podle Double MB modelu..."):
                     prompt = """
-                    Analyzuj tento tradingový graf a vrať POUZE formát JSON s následujícími klíči:
-                    1. "htf_context": (true/false) Skon EMA (5, 10, 20) a validovaný MB?
-                    2. "market_phase": (text) "Accumulation MB" nebo "Contain line"?
-                    3. "engine_ma_fan": (true/false) 1H MA vějíř seřazen s displacementem?
-                    4. "signature_entry": (true/false) MB1 -> Flush -> MB2?
-                    5. "zone_qualified": (true/false) Zóna fresh a vybrala likviditu?
+                    Analyzuj tento tradingový graf podle MentFX Double MB modelu a vrať POUZE JSON s těmito klíči (true/false):
+                    1. "krok1_mb1": Došlo k flushnutí ceny a vytvoření bariéry (MB1)?
+                    2. "krok2_liq": Nastal pullback (náběr likvidity / návrat k EMA 5/10)?
+                    3. "krok3_fan": Je MA vějíř správně seřazen (5, 10, 20, 50)?
+                    4. "krok4_mb2": Došlo k průrazu MB2 (finální vstupní signál)?
                     """
                     try:
                         first_image = Image.open(io.BytesIO(prepared_images[0][0]))
                         response = model.generate_content([prompt, first_image])
                         clean_json = response.text.strip().removeprefix('```json').removesuffix('```')
                         st.session_state.ai_data = json.loads(clean_json)
-                        st.success("Analýza dokončena! Zkontroluj formulář níže.")
+                        st.success("Analýza dokončena! Zkontroluj checklist níže.")
                     except Exception as e:
                         st.error(f"Chyba při komunikaci s AI: {e}")
 
     if prepared_images and not accounts_df.empty:
         data = st.session_state.ai_data if "ai_data" in st.session_state and st.session_state.ai_data else {}
         
-        # --- Logika pro automatickou seanci podle Prahy ---
         if prague_tz:
             cur_h = datetime.now(prague_tz).hour
         else:
-            cur_h = datetime.now().hour # Fallback
+            cur_h = datetime.now().hour
             
         if 8 <= cur_h < 13: def_sess = "Londýn (Evropa)"
         elif 13 <= cur_h < 17: def_sess = "Londýn + New York (Překryv)"
@@ -241,19 +239,23 @@ with tab1:
                 trading_session = st.selectbox("Obchodní seance", sess_opts, index=sess_opts.index(def_sess) if def_sess in sess_opts else 0)
                 
             st.markdown("---")
-            st.markdown("**🧠 Hodnocení kvality a emocí při vstupu**")
-            emotion_score = st.slider("Jak dobrý je tento setup? (1 = FOMO / Špatný, 10 = Učebnicový A+ Setup)", min_value=1, max_value=10, value=8)
-            
-            st.markdown("---")
-            htf_check = st.checkbox("Generals' check (EMA 5, 10, 20 & daily MB)", value=data.get("htf_context", False))
-            market_phase = st.text_input("Fáze trhu", value=data.get("market_phase", "Contain line"))
-            engine_check = st.checkbox("Engine check (MA Fan tyrkysová/červená/modrá)", value=data.get("engine_ma_fan", False))
-            signature_check = st.checkbox("Signature search (MB1 -> Flush -> MB2)", value=data.get("signature_entry", False))
-            zone_check = st.checkbox("Zone qualification (Fresh & Swept liquidity)", value=data.get("zone_qualified", False))
-            
-            st.markdown("---")
-            inverted_chart_check = st.checkbox("🔄 Inverted chart setup (Byl analyzován přes obrácený graf?)", value=False)
+            st.markdown("**🧠 Psychologie a Hodnocení setupu**")
+            emotion_score = st.slider("Jak dobrý a čistý je tento setup? (1 = FOMO / Nekvalitní, 10 = Učebnicový A+ Setup)", min_value=1, max_value=10, value=8)
             notes = st.text_area("Psychologie a poznámky k VSTUPU", value="Vstup přesně podle plánu.")
+            
+            st.markdown("---")
+            st.markdown("**🔍 Mechanický Checklist (Double MB)**")
+            
+            chk1, chk2 = st.columns(2)
+            with chk1:
+                step1_mb1 = st.checkbox("Krok 1: Flush & MB1 (Vytvoření bariéry)", value=data.get("krok1_mb1", False))
+                step2_liq = st.checkbox("Krok 2: Náběr likvidity (Pullback k EMA)", value=data.get("krok2_liq", False))
+            with chk2:
+                step3_fan = st.checkbox("Krok 3: MA Fan je správně seřazen", value=data.get("krok3_fan", False))
+                step4_mb2 = st.checkbox("Krok 4: Průraz MB2 (Finální vstup)", value=data.get("krok4_mb2", False))
+            
+            st.markdown("---")
+            inverted_chart_check = st.checkbox("🔄 Inverted chart setup (Analyzováno přes obrácený graf)", value=False)
             
             submit_entry = st.form_submit_button(label="🚀 Otevřít obchod (Uložit pro následné řízení)")
             
@@ -261,19 +263,20 @@ with tab1:
                 conn = sqlite3.connect('trading_journal.db')
                 cursor = conn.cursor()
                 
+                # Zapisujeme mechanický checklist do existujících boolean sloupců (aby se neměnila struktura DB)
                 cursor.execute('''
                     INSERT INTO trades (
                         account_id, ticker, direction, entry_time, actual_r, pnl_amount,
-                        htf_generals_check, market_phase, engine_ma_fan, 
-                        signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart, 
+                        htf_generals_check, fresh_zone, engine_ma_fan, signature_entry,
+                        market_phase, notes_emotions, image_data, inverted_chart, 
                         partial_pnl, currency, initial_lots, closed_lots, status, risk_amount, 
                         sl_be_value, partials_log, main_image_label, post_trade_notes, trading_session, emotion_score
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     selected_acc_id, ticker, direction, datetime.now().strftime("%Y-%m-%d %H:%M"), 
                     0.0, 0.0,
-                    htf_check, market_phase, engine_check, signature_check, 
-                    zone_check, notes, prepared_images[0][0], inverted_chart_check, 
+                    step1_mb1, step2_liq, step3_fan, step4_mb2, 
+                    "Double MB", notes, prepared_images[0][0], inverted_chart_check, 
                     0.0, trade_currency, lots_input, 0.0, 'Open', risk_input, 
                     risk_input, "", prepared_images[0][1], "", trading_session, emotion_score
                 ))
@@ -332,7 +335,7 @@ with tab2:
     else:
         for t in open_trades:
             (t_id, t_acc_name, t_acc_init, t_ticker, t_dir, t_time, t_r, t_pnl, 
-             t_htf, t_phase, t_eng, t_sig, t_zone, t_notes, t_img, t_acc_id, t_inv, 
+             t_step1, t_phase, t_step3, t_step4, t_step2, t_notes, t_img, t_acc_id, t_inv, 
              t_part_pnl, t_curr, t_init_lots, t_closed_lots, t_status, t_risk, t_sl_val, t_part_log, t_main_img_label, t_post_notes, t_sess, t_emo) = t
             
             clean_acc_name = str(t_acc_name).strip() if t_acc_name else "Neznámý účet"
@@ -420,11 +423,10 @@ with tab2:
                 with col_left:
                     st.markdown("### 📋 Parametry vstupu")
                     st.write(f"**Seance:** `{t_sess}` | **Hodnocení setupu:** `{t_emo}/10`")
-                    st.write(f"**Fáze trhu:** `{t_phase}`")
-                    st.write(f"- Generals' check: {'✅' if t_htf else '❌'}")
-                    st.write(f"- Engine MA Fan: {'✅' if t_eng else '❌'}")
-                    st.write(f"- Signature: {'✅' if t_sig else '❌'}")
-                    st.write(f"- Zóna: {'✅' if t_zone else '❌'}")
+                    st.write(f"- Krok 1: Flush & MB1: {'✅' if t_step1 else '❌'}")
+                    st.write(f"- Krok 2: Náběr likvidity: {'✅' if t_step2 else '❌'}")
+                    st.write(f"- Krok 3: MA Fan: {'✅' if t_step3 else '❌'}")
+                    st.write(f"- Krok 4: Průraz MB2: {'✅' if t_step4 else '❌'}")
                     st.write(f"- Inverted Chart: {'✅ Použito' if t_inv else '❌ Běžný graf'}")
                     st.info(f"**Poznámky ke vstupu:** {t_notes}")
                 with col_right:
@@ -436,7 +438,7 @@ with tab2:
                     
                     st.markdown("### 📝 Závěrečné poznámky / Reflexe")
                     with st.form(f"post_notes_form_{t_id}"):
-                        new_post_notes = st.text_area("Tvé vlastní zápisky k řízení nebo po uzavření obchodu:", value=t_post_notes)
+                        new_post_notes = st.text_area("Tvé vlastní zápisky k řízení:", value=t_post_notes)
                         submit_notes = st.form_submit_button("💾 Uložit zápisky")
                         if submit_notes:
                             conn_pn = sqlite3.connect('trading_journal.db')
@@ -506,7 +508,7 @@ with tab2:
     else:
         for t in closed_trades:
             (t_id, t_acc_name, t_acc_init, t_ticker, t_dir, t_time, t_r, t_pnl, 
-             t_htf, t_phase, t_eng, t_sig, t_zone, t_notes, t_img, t_acc_id, t_inv, 
+             t_step1, t_phase, t_step3, t_step4, t_step2, t_notes, t_img, t_acc_id, t_inv, 
              t_part_pnl, t_curr, t_init_lots, t_closed_lots, t_status, t_risk, t_sl_val, t_part_log, t_main_img_label, t_post_notes, t_sess, t_emo) = t
             
             clean_acc_name = str(t_acc_name).strip() if t_acc_name else "Neznámý účet"
@@ -539,11 +541,10 @@ with tab2:
                         
                     st.write("---")
                     st.write(f"**Seance:** `{t_sess}` | **Hodnocení setupu:** `{t_emo}/10`")
-                    st.write(f"**Fáze trhu:** `{t_phase}`")
-                    st.write(f"- Generals' check: {'✅ Splněno' if t_htf else '❌ Nesplněno'}")
-                    st.write(f"- Engine MA Fan: {'✅ Splněno' if t_eng else '❌ Nesplněno'}")
-                    st.write(f"- Signature: {'✅ Splněno' if t_sig else '❌ Nesplněno'}")
-                    st.write(f"- Kvalifikace zóny: {'✅ Splněno' if t_zone else '❌ Nesplněno'}")
+                    st.write(f"- Krok 1: Flush & MB1: {'✅' if t_step1 else '❌'}")
+                    st.write(f"- Krok 2: Náběr likvidity: {'✅' if t_step2 else '❌'}")
+                    st.write(f"- Krok 3: MA Fan: {'✅' if t_step3 else '❌'}")
+                    st.write(f"- Krok 4: Průraz MB2: {'✅' if t_step4 else '❌'}")
                     st.write(f"- Inverted Chart: {'✅ Použito' if t_inv else '❌ Běžný graf'}")
                     st.info(f"**Poznámky ke vstupu:** {t_notes}")
                 
@@ -556,7 +557,7 @@ with tab2:
                         
                     st.markdown("### 📝 Závěrečné poznámky / Reflexe")
                     with st.form(f"post_notes_form_hist_{t_id}"):
-                        new_post_notes = st.text_area("Tvé vlastní zápisky k řízení nebo po uzavření obchodu:", value=t_post_notes)
+                        new_post_notes = st.text_area("Tvé vlastní zápisky po uzavření obchodu:", value=t_post_notes)
                         submit_notes = st.form_submit_button("💾 Uložit zápisky")
                         if submit_notes:
                             conn_pn = sqlite3.connect('trading_journal.db')
@@ -841,16 +842,15 @@ with tab4:
             if model and total_closed_trades > 0:
                 with st.spinner("AI analyzuje tvá data a hledá klíčové patterny pro vylepšení..."):
                     recent_trades = closed_dash_trades.tail(20)
-                    data_str = recent_trades[['ticker', 'direction', 'actual_r', 'total_trade_pnl', 'currency', 'htf_generals_check', 'engine_ma_fan', 'inverted_chart', 'trading_session', 'emotion_score']].to_json(orient='records')
+                    data_str = recent_trades[['ticker', 'direction', 'actual_r', 'total_trade_pnl', 'currency', 'htf_generals_check', 'fresh_zone', 'engine_ma_fan', 'signature_entry', 'inverted_chart', 'trading_session', 'emotion_score']].to_json(orient='records')
                     
                     prompt_coach = f"""
-                    Jsi profesionální trading kouč zaměřený na strategii MentFX. Analyzuj těchto posledních pár uzavřených obchodů klienta (data v JSON: {data_str}).
+                    Jsi profesionální trading kouč zaměřený na strategii MentFX (Double MB model). Analyzuj posledních pár uzavřených obchodů klienta (data v JSON: {data_str}).
                     Tvůj úkol:
-                    1. Dej mu stručnou, údernou a motivační zpětnou vazbu v češtině.
-                    2. Vypíchni, co funguje dobře (např. dodržování pravidel jako MA fan).
-                    3. Upozorni na to, kde ztrácí.
-                    4. Analyzuj také vliv 'emotion_score' (1-10) a 'trading_session' na jeho úspěšnost.
-                    Max 3-4 odstavce.
+                    1. Dej mu stručnou a motivační zpětnou vazbu.
+                    2. Upozorni na to, kde ztrácí a kde vydělává.
+                    3. Analyzuj vliv 'emotion_score' (1-10) a 'trading_session' na jeho úspěšnost. Ovlivňuje psychika výkon?
+                    Max 3-4 odstavce v češtině.
                     """
                     try:
                         resp = model.generate_content(prompt_coach)
@@ -1025,7 +1025,7 @@ with tab4:
             </div>
         """, unsafe_allow_html=True)
 
-        # --- OBNOVENÝ DETAIL DNE POD KALENDÁŘEM (Nyní plné zobrazení) ---
+        # --- OBNOVENÝ DETAIL DNE POD KALENDÁŘEM ---
         st.markdown("---")
         st.subheader("🔍 Kompletní detail obchodů pro vybraný den")
         
@@ -1057,7 +1057,7 @@ with tab4:
                     header_str = f"{badge} Obchod #{dt_id} | Čas: {dt_time_str} | Pár: {dt_ticker} ({dt_dir}) | Celkový PnL: {total_day_pnl:+,.2f} {dt_curr} ({trade_pct_item:+.2f}%)"
                     
                     with st.expander(header_str):
-                        st.info(f"Tento obchod je momentálně ve stavu: **{dt_status}**. Pro detailní úpravu parametrů nebo výběr Partials běž do záložky 'Řízení & Historie'.")
+                        st.info(f"Tento obchod je momentálně ve stavu: **{dt_status}**. Pro detailní úpravu parametrů běž do záložky 'Řízení & Historie'.")
                         
                         col_l, col_r = st.columns(2)
                         with col_l:
@@ -1067,11 +1067,10 @@ with tab4:
                             st.markdown(f"### 💰 CELKOVÝ VÝSLEDEK: {dt_curr} {total_day_pnl:,.2f}")
                             st.write("---")
                             st.write(f"**Seance:** `{dt.get('trading_session', 'Neznámá')}` | **Hodnocení setupu:** `{dt.get('emotion_score', 5)}/10`")
-                            st.write(f"**Fáze trhu:** `{dt.get('market_phase', 'N/A')}`")
-                            st.write(f"- Generals' check: {'✅' if dt.get('htf_generals_check') else '❌'}")
-                            st.write(f"- Engine MA Fan: {'✅' if dt.get('engine_ma_fan') else '❌'}")
-                            st.write(f"- Signature: {'✅' if dt.get('signature_entry') else '❌'}")
-                            st.write(f"- Zóna: {'✅' if dt.get('fresh_zone') else '❌'}")
+                            st.write(f"- Krok 1: Flush & MB1: {'✅' if dt.get('htf_generals_check') else '❌'}")
+                            st.write(f"- Krok 2: Náběr likvidity: {'✅' if dt.get('fresh_zone') else '❌'}")
+                            st.write(f"- Krok 3: MA Fan: {'✅' if dt.get('engine_ma_fan') else '❌'}")
+                            st.write(f"- Krok 4: Průraz MB2: {'✅' if dt.get('signature_entry') else '❌'}")
                             st.write(f"- Inverted Chart: {'✅' if dt.get('inverted_chart') else '❌'}")
                         
                         with col_r:
