@@ -119,6 +119,17 @@ st.markdown("""
     .cal-card-empty { background-color: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px; text-align: center; height: 95px; margin-bottom: 8px; opacity: 0.4; }
     .cal-day-header { font-weight: bold; text-align: center; color: #8b949e; padding-bottom: 5px; }
     .metric-card { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 18px; text-align: center; margin-bottom: 15px; }
+    
+    /* ZABRÁNĚNÍ TŘEM TEČKÁM (ZKRACOVÁNÍ) A RESPONZIVNÍ VELIKOST PÍSMA METRIK */
+    div[data-testid="stMetricValue"] {
+        font-size: clamp(1.2rem, 2vw, 2.2rem) !important;
+        white-space: break-spaces !important;
+        word-wrap: break-word !important;
+        line-height: 1.2 !important;
+    }
+    div[data-testid="stMetricDelta"] {
+        font-size: clamp(0.9rem, 1.2vw, 1.2rem) !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -271,8 +282,8 @@ if menu_selection == "➕ Nový obchod (Vstup)":
                 cursor.execute('''
                     INSERT INTO trades (
                         account_id, ticker, direction, entry_time, actual_r, pnl_amount,
-                        htf_generals_check, market_phase, engine_ma_fan, 
-                        signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart, 
+                        htf_generals_check, fresh_zone, engine_ma_fan, signature_entry,
+                        market_phase, notes_emotions, image_data, inverted_chart, 
                         partial_pnl, currency, initial_lots, closed_lots, status, risk_amount, 
                         sl_be_value, partials_log, main_image_label, post_trade_notes, trading_session, emotion_score
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -676,7 +687,8 @@ elif menu_selection == "📊 Dashboard & Kalendář":
         
         st.markdown("---")
         d1, d2, d3, d4 = st.columns(4)
-        d1.metric("Net PnL (Účet)", f"{sym}{total_pnl_all:,.2f} ({total_pct_return:+.2f}%)")
+        # NATIVNÍ DELTA PARAMETR POUŽIT ZDE:
+        d1.metric("Net PnL (Účet)", f"{sym}{total_pnl_all:,.2f}", f"{total_pct_return:+.2f} %")
         d2.metric("Aktuální stav účtu", f"{sym}{current_equity:,.2f}")
         d3.metric("Win Rate (Uzavřené)", f"{win_rate:.1f}%")
         d4.metric("Uzavřených obchodů", total_closed_trades)
@@ -764,13 +776,12 @@ elif menu_selection == "📊 Dashboard & Kalendář":
                     data_str = recent_trades[['ticker', 'direction', 'actual_r', 'total_trade_pnl', 'currency', 'htf_generals_check', 'fresh_zone', 'engine_ma_fan', 'signature_entry', 'inverted_chart', 'trading_session', 'emotion_score']].to_json(orient='records')
                     
                     prompt_coach = f"""
-                    Jsi profesionální trading kouč zaměřený na strategii MentFX. Analyzuj těchto posledních pár uzavřených obchodů klienta (data v JSON: {data_str}).
+                    Jsi profesionální trading kouč zaměřený na strategii MentFX (Double MB model). Analyzuj posledních pár uzavřených obchodů klienta (data v JSON: {data_str}).
                     Tvůj úkol:
-                    1. Dej mu stručnou, údernou a motivační zpětnou vazbu v češtině.
-                    2. Vypíchni, co funguje dobře (např. dodržování pravidel jako MA fan).
-                    3. Upozorni na to, kde ztrácí.
-                    4. Zhodnoť vliv 'emotion_score' (1-10) a 'trading_session' na jeho úspěšnost.
-                    Max 3-4 odstavce.
+                    1. Dej mu stručnou a motivační zpětnou vazbu.
+                    2. Upozorni na to, kde ztrácí a kde vydělává.
+                    3. Analyzuj vliv 'emotion_score' (1-10) a 'trading_session' na jeho úspěšnost. Ovlivňuje psychika výkon?
+                    Max 3-4 odstavce v češtině.
                     """
                     try:
                         resp = model.generate_content(prompt_coach)
@@ -945,7 +956,7 @@ elif menu_selection == "📊 Dashboard & Kalendář":
             </div>
         """, unsafe_allow_html=True)
 
-        # --- OBNOVENÝ DETAIL DNE POD KALENDÁŘEM ---
+        # --- OBNOVENÝ DETAIL DNE POD KALENDÁŘEM (Nyní plné zobrazení) ---
         st.markdown("---")
         st.subheader("🔍 Kompletní detail obchodů pro vybraný den")
         
