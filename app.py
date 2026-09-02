@@ -11,6 +11,12 @@ import plotly.graph_objects as go
 import plotly.express as px
 import streamlit.components.v1 as components
 
+# --- POMOCNÁ FUNKCE PRO MĚNOVÉ SYMBOLY ---
+def get_sym(curr):
+    if curr == "EUR": return "€"
+    elif curr == "CZK": return "Kč"
+    return "$"
+
 # --- 1. DATABÁZE (SQLite) ---
 def init_db():
     conn = sqlite3.connect('trading_journal.db')
@@ -53,16 +59,21 @@ def init_db():
         );
     ''')
     
-    # Bezpečné rozšíření stávající databáze o nové sloupce (pokud ještě neexistují)
-    try:
-        cursor.execute("ALTER TABLE trades ADD COLUMN account_id INTEGER;")
-    except sqlite3.OperationalError:
-        pass
+    # Bezpečné rozšíření stávající databáze o nové sloupce
+    try: cursor.execute("ALTER TABLE trades ADD COLUMN account_id INTEGER;")
+    except sqlite3.OperationalError: pass
         
-    try:
-        cursor.execute("ALTER TABLE trades ADD COLUMN inverted_chart BOOLEAN DEFAULT 0;")
-    except sqlite3.OperationalError:
-        pass
+    try: cursor.execute("ALTER TABLE trades ADD COLUMN inverted_chart BOOLEAN DEFAULT 0;")
+    except sqlite3.OperationalError: pass
+        
+    try: cursor.execute("ALTER TABLE trades ADD COLUMN partials TEXT;")
+    except sqlite3.OperationalError: pass
+    
+    try: cursor.execute("ALTER TABLE accounts ADD COLUMN currency TEXT DEFAULT 'USD';")
+    except sqlite3.OperationalError: pass
+        
+    try: cursor.execute("ALTER TABLE trades ADD COLUMN currency TEXT DEFAULT 'USD';")
+    except sqlite3.OperationalError: pass
         
     conn.commit()
     conn.close()
@@ -147,24 +158,26 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 with tab1:
     
     with st.expander("🧮 Kalkulačka velikosti pozice (Risk Management)"):
-        c_col1, c_col2, c_col3 = st.columns(3)
+        c_col1, c_col2, c_col3, c_col4 = st.columns(4)
         with c_col1:
-            calc_acc_bal = st.number_input("Zůstatek na účtu ($)", value=200000.0, step=1000.0)
+            calc_acc_bal = st.number_input("Zůstatek na účtu", value=200000.0, step=1000.0)
         with c_col2:
-            calc_risk_pct = st.number_input("Risk na obchod (%)", value=1.0, step=0.1)
+            calc_curr = st.selectbox("Měna kalkulačky", ["USD", "EUR", "CZK"])
         with c_col3:
-            calc_sl_pips = st.number_input("Velikost Stop Lossu (pips)", value=10.0, step=1.0)
+            calc_risk_pct = st.number_input("Risk na obchod (%)", value=1.0, step=0.1)
+        with c_col4:
+            calc_sl_pips = st.number_input("Stop Loss (pips)", value=10.0, step=1.0)
         
         risk_amt = calc_acc_bal * (calc_risk_pct / 100)
         if calc_sl_pips > 0:
-            calc_lots = risk_amt / (calc_sl_pips * 10)  # Kalkulace pro standardní páry USD
-            st.info(f"🛡️ **Riskovaná částka:** `${risk_amt:,.2f}` | 📉 **Doporučená velikost pozice (odhad na 10$/pip):** `{calc_lots:.2f} Lotů`")
+            calc_lots = risk_amt / (calc_sl_pips * 10)
+            st.info(f"🛡️ **Riskovaná částka:** `{get_sym(calc_curr)}{risk_amt:,.2f}` | 📉 **Doporučená velikost pozice (odhad na 10 {calc_curr}/pip):** `{calc_lots:.2f} Lotů`")
     
     st.markdown("---")
     st.write("Nahraj screenshot grafu, nechej AI vyhodnotit checklist a ulož obchod na vybraný účet.")
     
     conn = sqlite3.connect('trading_journal.db')
-    accounts_df = pd.read_sql_query("SELECT id, name, initial_balance FROM accounts", conn)
+    accounts_df = pd.read_sql_query("SELECT id, name, initial_balance, COALESCE(currency, 'USD') as currency FROM accounts", conn)
     conn.close()
     
     if accounts_df.empty:
@@ -210,20 +223,25 @@ with tab1:
         st.subheader("📝 Detaily obchodu a kontrola")
         
         with st.form("trade_form"):
-            account_options = {str(name).strip(): (acc_id, init_bal) for name, acc_id, init_bal in zip(accounts_df['name'], accounts_df['id'], accounts_df['initial_balance'])}
+            account_options = {f"{str(name).strip()} ({curr})": (acc_id, init_bal, curr) for name, acc_id, init_bal, curr in zip(accounts_df['name'], accounts_df['id'], accounts_df['initial_balance'], accounts_df['currency'])}
             selected_account_name = st.selectbox("Obchodní účet", list(account_options.keys()))
-            selected_acc_id, selected_acc_init = account_options[selected_account_name]
+            selected_acc_id, selected_acc_init, selected_acc_curr = account_options[selected_account_name]
             
-            col1, col2 = st.columns(2)
-            with col1:
+            c1, c2, c3 = st.columns(3)
+            with c1:
                 ticker = st.text_input("Ticker / Pár", value="GBP/JPY")
                 direction = st.selectbox("Směr", ["Long", "Short"])
-            with col2:
+            with c2:
                 actual_r = st.number_input("Dosažené R (např. 2.0)", value=2.0)
-                pnl = st.number_input("Zisk (+) / Ztráta (-) v penězích", value=250.0)
+                pnl = st.number_input("Zisk (+) / Ztráta (-)", value=250.0)
+            with c3:
+                # Automaticky se předvybere měna podle zvoleného účtu
+                curr_list = ["USD", "EUR", "CZK"]
+                def_idx = curr_list.index(selected_acc_curr) if selected_acc_curr in curr_list else 0
+                trade_currency = st.selectbox("Měna obchodu", curr_list, index=def_idx)
                 
             pct_preview = (pnl / selected_acc_init) * 100 if selected_acc_init > 0 else 0.0
-            st.info(f"📊 **Dopad na účet:** `{pct_preview:+.2f}%` z celkového kapitálu (${selected_acc_init:,.2f})")
+            st.info(f"📊 **Dopad na účet:** `{pct_preview:+.2f}%` z celkového kapitálu ({get_sym(selected_acc_curr)}{selected_acc_init:,.2f})")
                 
             htf_check = st.checkbox("Generals' check (EMA 5, 10, 20 & daily MB)", value=data.get("htf_context", False))
             market_phase = st.text_input("Fáze trhu", value=data.get("market_phase", "Contain line"))
@@ -235,6 +253,7 @@ with tab1:
             inverted_chart_check = st.checkbox("🔄 Inverted chart setup (Byl analyzován přes obrácený graf?)", value=False)
             
             notes = st.text_area("Psychologie a poznámky k obchodu", value="Vše podle plánu.")
+            partials_input = st.text_input("Částečné výběry (Partials)", placeholder="Např. Zavřeno 6 lotů z 12 na 1R", value="")
             
             submit_button = st.form_submit_button(label="💾 Uložit obchod do zvoleného účtu")
             
@@ -245,16 +264,16 @@ with tab1:
                     INSERT INTO trades (
                         account_id, ticker, direction, entry_time, actual_r, pnl_amount,
                         htf_generals_check, market_phase, engine_ma_fan, 
-                        signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart, partials, currency
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     selected_acc_id, ticker, direction, datetime.now().strftime("%Y-%m-%d %H:%M"), 
                     actual_r, pnl, htf_check, market_phase, engine_check, signature_check, 
-                    zone_check, notes, st.session_state.saved_image_bytes, inverted_chart_check
+                    zone_check, notes, st.session_state.saved_image_bytes, inverted_chart_check, partials_input, trade_currency
                 ))
                 conn.commit()
                 conn.close()
-                st.success(f"🎉 Obchod s výsledkem {pnl:+,.2f} USD ({pct_preview:+.2f}%) byl úspěšně zapsán!")
+                st.success(f"🎉 Obchod s výsledkem {pnl:+,.2f} {trade_currency} ({pct_preview:+.2f}%) byl úspěšně zapsán!")
 
 # ==========================================
 # ZÁLOŽKA 2: Historie a rozklikávání obchodů
@@ -267,7 +286,8 @@ with tab2:
     cursor.execute('''
         SELECT t.id, a.name, a.initial_balance, t.ticker, t.direction, t.entry_time, t.actual_r, t.pnl_amount, 
                t.htf_generals_check, t.market_phase, t.engine_ma_fan, 
-               t.signature_entry, t.fresh_zone, t.notes_emotions, t.image_data, t.account_id, t.inverted_chart 
+               t.signature_entry, t.fresh_zone, t.notes_emotions, t.image_data, t.account_id, t.inverted_chart, t.partials,
+               COALESCE(t.currency, 'USD') as currency
         FROM trades t
         LEFT JOIN accounts a ON t.account_id = a.id
         ORDER BY t.id DESC
@@ -290,9 +310,8 @@ with tab2:
         st.markdown("---")
         
         for t in filtered_trades:
-            # Rozbalení rozšířených hodnot
             (t_id, t_acc_name, t_acc_init, t_ticker, t_dir, t_time, t_r, t_pnl, 
-             t_htf, t_phase, t_eng, t_sig, t_zone, t_notes, t_img, t_acc_id, t_inv) = t
+             t_htf, t_phase, t_eng, t_sig, t_zone, t_notes, t_img, t_acc_id, t_inv, t_partials, t_curr) = t
             
             clean_acc_name = str(t_acc_name).strip() if t_acc_name else "Neznámý účet"
             init_b = t_acc_init if t_acc_init and t_acc_init > 0 else 200000.0
@@ -300,22 +319,26 @@ with tab2:
             trade_pct = (pnl_val / init_b) * 100
             
             badge = "🟢" if pnl_val >= 0 else "🔴"
-            header = f"{badge} #{t_id} [{clean_acc_name}] | {t_time} | {t_ticker} ({t_dir}) | PnL: {pnl_val:+,.2f} USD ({trade_pct:+.2f}%) | {t_r} R"
+            header = f"{badge} #{t_id} [{clean_acc_name}] | {t_time} | {t_ticker} ({t_dir}) | PnL: {pnl_val:+,.2f} {t_curr} ({trade_pct:+.2f}%) | {t_r} R"
             
             with st.expander(header):
                 with st.form(key=f"edit_trade_{t_id}"):
                     st.write(f"✏️ **Rychlá úprava (Dopad na účet: {trade_pct:+.2f}%):**")
-                    col_e1, col_e2 = st.columns(2)
+                    col_e1, col_e2, col_e3 = st.columns(3)
                     with col_e1:
-                        new_pnl = st.number_input("Zisk (+) / Ztráta (-) v penězích", value=float(pnl_val), key=f"pnl_{t_id}")
+                        new_pnl = st.number_input(f"Zisk/Ztráta ({t_curr})", value=float(pnl_val), key=f"pnl_{t_id}")
+                        new_partials = st.text_input("Partials", value=str(t_partials) if t_partials else "", key=f"part_{t_id}")
                     with col_e2:
                         new_r = st.number_input("Dosažené R", value=float(t_r) if t_r is not None else 0.0, key=f"r_{t_id}")
+                    with col_e3:
+                        curr_opts = ["USD", "EUR", "CZK"]
+                        new_curr = st.selectbox("Měna obchodu", curr_opts, index=curr_opts.index(t_curr) if t_curr in curr_opts else 0, key=f"curr_{t_id}")
                     
                     update_trade_btn = st.form_submit_button("💾 Uložit změnu obchodu")
                     if update_trade_btn:
                         conn_ut = sqlite3.connect('trading_journal.db')
                         cursor_ut = conn_ut.cursor()
-                        cursor_ut.execute("UPDATE trades SET pnl_amount = ?, actual_r = ? WHERE id = ?", (new_pnl, new_r, t_id))
+                        cursor_ut.execute("UPDATE trades SET pnl_amount = ?, actual_r = ?, partials = ?, currency = ? WHERE id = ?", (new_pnl, new_r, new_partials, new_curr, t_id))
                         conn_ut.commit()
                         conn_ut.close()
                         st.success("Obchod byl úspěšně aktualizován!")
@@ -326,20 +349,21 @@ with tab2:
                 
                 with col_left:
                     st.markdown("### 📋 Vyhodnocení parametrů")
-                    st.write(f"**Účet:** `{clean_acc_name}` (Základ: ${init_b:,.2f})")
+                    st.write(f"**Účet:** `{clean_acc_name}`")
                     st.write(f"**Dopad obchodu:** `{trade_pct:+.2f}%`")
                     st.write(f"**Fáze trhu:** `{t_phase}`")
                     st.write(f"- Generals' check: {'✅ Splněno' if t_htf else '❌ Nesplněno'}")
-                    st.write(f"- Engine MA Fan (5/10/20): {'✅ Splněno' if t_eng else '❌ Nesplněno'}")
-                    st.write(f"- Signature (MB1 -> Flush -> MB2): {'✅ Splněno' if t_sig else '❌ Nesplněno'}")
+                    st.write(f"- Engine MA Fan: {'✅ Splněno' if t_eng else '❌ Nesplněno'}")
+                    st.write(f"- Signature: {'✅ Splněno' if t_sig else '❌ Nesplněno'}")
                     st.write(f"- Kvalifikace zóny: {'✅ Splněno' if t_zone else '❌ Nesplněno'}")
                     st.write(f"- Inverted Chart: {'✅ Použito' if t_inv else '❌ Běžný graf'}")
+                    st.write(f"- Partials: `{t_partials if t_partials else 'Žádné'}`")
                     
                     st.markdown("### 🧠 Poznámky a emoce")
                     st.info(t_notes if t_notes else "Žádné poznámky nebyly zadány.")
                 
                 with col_right:
-                    st.markdown("### 🖼️ Galerie obrázků k obchodu")
+                    st.markdown("### 🖼️ Galerie obrázků")
                     if t_img is not None:
                         img_obj = Image.open(io.BytesIO(t_img))
                         st.image(img_obj, caption=f"Hlavní vstupní graf #{t_id}", use_container_width=True)
@@ -354,7 +378,7 @@ with tab2:
                     
                     if extra_images:
                         st.write("---")
-                        st.write("**Dodatečné screenshoty v paměti:**")
+                        st.write("**Dodatečné screenshoty:**")
                         for ex_id, ex_blob in extra_images:
                             ex_img_obj = Image.open(io.BytesIO(ex_blob))
                             st.image(ex_img_obj, caption=f"Dodatečný záznam #{ex_id}", use_container_width=True)
@@ -380,11 +404,13 @@ with tab3:
     
     with st.expander("➕ Vytvořit nový účet"):
         with st.form("new_account_form"):
-            col_a1, col_a2 = st.columns(2)
+            col_a1, col_a2, col_a3 = st.columns(3)
             with col_a1:
                 acc_name = st.text_input("Název účtu (např. Mentfunding)")
             with col_a2:
-                acc_initial = st.number_input("Základní / Počáteční kapitál ($/EUR)", value=200000.0)
+                acc_initial = st.number_input("Základní / Počáteční kapitál", value=200000.0)
+            with col_a3:
+                acc_currency = st.selectbox("Měna účtu", ["USD", "EUR", "CZK"])
                 
             acc_submit = st.form_submit_button("Vytvořit účet")
             if acc_submit:
@@ -395,10 +421,10 @@ with tab3:
                     try:
                         conn = sqlite3.connect('trading_journal.db')
                         cursor = conn.cursor()
-                        cursor.execute("INSERT INTO accounts (name, initial_balance) VALUES (?, ?)", (clean_name, acc_initial))
+                        cursor.execute("INSERT INTO accounts (name, initial_balance, currency) VALUES (?, ?, ?)", (clean_name, acc_initial, acc_currency))
                         conn.commit()
                         conn.close()
-                        st.success(f"Účet '{clean_name}' byl úspěšně vytvořen!")
+                        st.success(f"Účet '{clean_name}' byl úspěšně vytvořen v {acc_currency}!")
                         st.rerun()
                     except sqlite3.IntegrityError:
                         st.error("Účet s tímto názvem již existuje!")
@@ -408,7 +434,7 @@ with tab3:
     
     conn = sqlite3.connect('trading_journal.db')
     accounts_summary_query = '''
-        SELECT a.id, a.name, a.initial_balance, 
+        SELECT a.id, a.name, a.initial_balance, COALESCE(a.currency, 'USD') as currency,
                COALESCE(SUM(t.pnl_amount), 0) as total_pnl,
                COUNT(t.id) as trade_count
         FROM accounts a
@@ -425,25 +451,33 @@ with tab3:
             acc_id = row['id']
             acc_name = str(row['name']).strip()
             current_initial = row['initial_balance']
+            acc_curr = row['currency']
             total_pnl = row['total_pnl']
             calculated_balance = current_initial + total_pnl
+            sym = get_sym(acc_curr)
             
             with st.container():
-                st.markdown(f"### 🏦 Účet: {acc_name}")
+                st.markdown(f"### 🏦 Účet: {acc_name} ({acc_curr})")
                 col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-                col_m1.metric("Základní vklad", f"{current_initial:,.2f}")
-                col_m2.metric("Celkový PnL", f"{total_pnl:+,.2f}")
-                col_m3.metric("Aktuální stav", f"{calculated_balance:,.2f}")
+                col_m1.metric("Základní vklad", f"{sym}{current_initial:,.2f}")
+                col_m2.metric("Celkový PnL", f"{sym}{total_pnl:+,.2f}")
+                col_m3.metric("Aktuální stav", f"{sym}{calculated_balance:,.2f}")
                 col_m4.metric("Počet obchodů", row['trade_count'])
                 
                 with st.form(key=f"edit_acc_{acc_id}"):
-                    new_base = st.number_input(f"Upravit základ pro '{acc_name}':", value=float(current_initial), key=f"val_{acc_id}")
-                    update_btn = st.form_submit_button(f"💾 Uložit nový základ pro {acc_name}")
+                    c_ed1, c_ed2 = st.columns(2)
+                    with c_ed1:
+                        new_base = st.number_input(f"Upravit základ:", value=float(current_initial), key=f"val_{acc_id}")
+                    with c_ed2:
+                        curr_opts = ["USD", "EUR", "CZK"]
+                        new_acc_curr = st.selectbox("Změnit měnu účtu:", curr_opts, index=curr_opts.index(acc_curr) if acc_curr in curr_opts else 0, key=f"curr_acc_{acc_id}")
+                    
+                    update_btn = st.form_submit_button(f"💾 Uložit změny pro {acc_name}")
                     
                     if update_btn:
                         conn_up = sqlite3.connect('trading_journal.db')
                         cursor_up = conn_up.cursor()
-                        cursor_up.execute("UPDATE accounts SET initial_balance = ? WHERE id = ?", (new_base, acc_id))
+                        cursor_up.execute("UPDATE accounts SET initial_balance = ?, currency = ? WHERE id = ?", (new_base, new_acc_curr, acc_id))
                         conn_up.commit()
                         conn_up.close()
                         st.success(f"Základ pro účet '{acc_name}' byl aktualizován!")
@@ -457,7 +491,7 @@ with tab4:
     st.subheader("📊 Výkonnostní Dashboard & Statistiky")
     
     conn = sqlite3.connect('trading_journal.db')
-    acc_dash_df = pd.read_sql_query("SELECT id, name, initial_balance FROM accounts", conn)
+    acc_dash_df = pd.read_sql_query("SELECT id, name, initial_balance, COALESCE(currency, 'USD') as currency FROM accounts", conn)
     conn.close()
     
     if acc_dash_df.empty:
@@ -469,15 +503,17 @@ with tab4:
         selected_acc_row = acc_dash_df[acc_dash_df['clean_name'] == dash_account_name].iloc[0]
         selected_acc_id = selected_acc_row['id']
         selected_acc_init = selected_acc_row['initial_balance']
+        selected_acc_curr = selected_acc_row['currency']
+        sym = get_sym(selected_acc_curr)
         
         conn_d = sqlite3.connect('trading_journal.db')
         dash_trades = pd.read_sql_query(
-            "SELECT id, ticker, direction, entry_time, actual_r, pnl_amount, htf_generals_check, market_phase, engine_ma_fan, signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart FROM trades WHERE account_id = ? ORDER BY id ASC", 
+            "SELECT id, ticker, direction, entry_time, actual_r, pnl_amount, htf_generals_check, market_phase, engine_ma_fan, signature_entry, fresh_zone, notes_emotions, image_data, inverted_chart, partials, COALESCE(currency, 'USD') as currency FROM trades WHERE account_id = ? ORDER BY id ASC", 
             conn_d, params=(selected_acc_id,)
         )
         if dash_trades.empty:
             fallback_query = '''
-                SELECT t.id, t.ticker, t.direction, t.entry_time, t.actual_r, t.pnl_amount, t.htf_generals_check, t.market_phase, t.engine_ma_fan, t.signature_entry, t.fresh_zone, t.notes_emotions, t.image_data, t.inverted_chart 
+                SELECT t.id, t.ticker, t.direction, t.entry_time, t.actual_r, t.pnl_amount, t.htf_generals_check, t.market_phase, t.engine_ma_fan, t.signature_entry, t.fresh_zone, t.notes_emotions, t.image_data, t.inverted_chart, t.partials, COALESCE(t.currency, 'USD') as currency
                 FROM trades t
                 LEFT JOIN accounts a ON t.account_id = a.id
                 WHERE TRIM(a.name) = ? ORDER BY t.id ASC
@@ -509,8 +545,8 @@ with tab4:
         
         st.markdown("---")
         d1, d2, d3, d4 = st.columns(4)
-        d1.metric("Net PnL", f"${total_pnl:,.2f} ({total_pct_return:+.2f}%)")
-        d2.metric("Aktuální stav účtu", f"${current_equity:,.2f}")
+        d1.metric("Net PnL", f"{sym}{total_pnl:,.2f} ({total_pct_return:+.2f}%)")
+        d2.metric("Aktuální stav účtu", f"{sym}{current_equity:,.2f}")
         d3.metric("Úspěšnost (Win Rate)", f"{win_rate:.1f}%")
         d4.metric("Celkem obchodů", total_trades)
         
@@ -522,7 +558,7 @@ with tab4:
             st.markdown(f"""
                 <div class="metric-card">
                     <div style="font-size: 13px; color: #8b949e; font-weight: bold;">Průměrný zisk (Avg Win)</div>
-                    <div style="font-size: 20px; font-weight: bold; color: #2ea043; margin-top: 6px;">${avg_win:,.2f}</div>
+                    <div style="font-size: 20px; font-weight: bold; color: #2ea043; margin-top: 6px;">{sym}{avg_win:,.2f}</div>
                     <div style="font-size: 11px; color: #8b949e;">({(avg_win/selected_acc_init)*100:+.2f}% kapitálu)</div>
                 </div>
             """, unsafe_allow_html=True)
@@ -531,7 +567,7 @@ with tab4:
             st.markdown(f"""
                 <div class="metric-card">
                     <div style="font-size: 13px; color: #8b949e; font-weight: bold;">Průměrná ztráta (Avg Loss)</div>
-                    <div style="font-size: 20px; font-weight: bold; color: #da3633; margin-top: 6px;">${avg_loss:,.2f}</div>
+                    <div style="font-size: 20px; font-weight: bold; color: #da3633; margin-top: 6px;">{sym}{avg_loss:,.2f}</div>
                     <div style="font-size: 11px; color: #8b949e;">({(avg_loss/selected_acc_init)*100:+.2f}% kapitálu)</div>
                 </div>
             """, unsafe_allow_html=True)
@@ -540,7 +576,7 @@ with tab4:
             st.markdown(f"""
                 <div class="metric-card">
                     <div style="font-size: 13px; color: #8b949e; font-weight: bold;">Nejlepší obchod (Best Trade)</div>
-                    <div style="font-size: 20px; font-weight: bold; color: #2ea043; margin-top: 6px;">${best_trade:,.2f}</div>
+                    <div style="font-size: 20px; font-weight: bold; color: #2ea043; margin-top: 6px;">{sym}{best_trade:,.2f}</div>
                     <div style="font-size: 11px; color: #8b949e;">({(best_trade/selected_acc_init)*100:+.2f}% kapitálu)</div>
                 </div>
             """, unsafe_allow_html=True)
@@ -549,7 +585,7 @@ with tab4:
             st.markdown(f"""
                 <div class="metric-card">
                     <div style="font-size: 13px; color: #8b949e; font-weight: bold;">Nejhorší obchod (Worst Trade)</div>
-                    <div style="font-size: 20px; font-weight: bold; color: #da3633; margin-top: 6px;">${worst_trade:,.2f}</div>
+                    <div style="font-size: 20px; font-weight: bold; color: #da3633; margin-top: 6px;">{sym}{worst_trade:,.2f}</div>
                     <div style="font-size: 11px; color: #8b949e;">({(worst_trade/selected_acc_init)*100:+.2f}% kapitálu)</div>
                 </div>
             """, unsafe_allow_html=True)
@@ -562,7 +598,6 @@ with tab4:
             graph_c1, graph_c2 = st.columns(2)
             
             with graph_c1:
-                # Výpočet Win-rate podle Tickerů
                 pair_stats = dash_trades.groupby('ticker').apply(
                     lambda x: pd.Series({'Wins': (x['pnl_amount'] > 0).sum(), 'Losses': (x['pnl_amount'] <= 0).sum()})
                 ).reset_index()
@@ -577,7 +612,6 @@ with tab4:
                 st.plotly_chart(fig_pairs, use_container_width=True)
                 
             with graph_c2:
-                # Rozložení Long vs Short a Inverted
                 dir_stats = dash_trades.groupby('direction')['id'].count().reset_index()
                 fig_dir = go.Figure(data=[go.Pie(
                     labels=dir_stats['direction'], 
@@ -595,8 +629,8 @@ with tab4:
         if st.button("Zhodnotit moje statistiky pomocí AI"):
             if model and total_trades > 0:
                 with st.spinner("AI analyzuje tvá data a hledá klíčové patterny pro vylepšení..."):
-                    recent_trades = dash_trades.tail(20) # Posledních 20 obchodů kvůli limitům AI
-                    data_str = recent_trades[['ticker', 'direction', 'actual_r', 'pnl_amount', 'htf_generals_check', 'engine_ma_fan', 'inverted_chart']].to_json(orient='records')
+                    recent_trades = dash_trades.tail(20)
+                    data_str = recent_trades[['ticker', 'direction', 'actual_r', 'pnl_amount', 'currency', 'htf_generals_check', 'engine_ma_fan', 'inverted_chart']].to_json(orient='records')
                     
                     prompt_coach = f"""
                     Jsi profesionální trading kouč zaměřený na strategii MentFX. Analyzuj těchto posledních pár obchodů klienta (data v JSON: {data_str}).
@@ -619,11 +653,9 @@ with tab4:
         # --- HLADKÁ ZAOBLENÁ PLOTLY EQUITY KŘIVKA (SPLINE) ---
         if not dash_trades.empty:
             
-            # --- TYHLE TŘI ŘÁDKY MI V PŘEDCHOZÍM KÓDU OMYLEM VYPADLY ---
             dash_trades['date_parsed'] = pd.to_datetime(dash_trades['entry_time'])
             dash_trades = dash_trades.sort_values('date_parsed', ascending=True).reset_index(drop=True)
             dash_trades['cumulative_pnl'] = dash_trades['pnl_amount'].cumsum()
-            # -----------------------------------------------------------
             
             x_vals = ['Start'] + [f"Obchod #{i+1} ({t.strftime('%d.%m.')})" for i, t in enumerate(dash_trades['date_parsed'])]
             y_vals = [0.0] + dash_trades['cumulative_pnl'].tolist()
@@ -643,7 +675,7 @@ with tab4:
                 margin=dict(l=20, r=20, t=40, b=20),
                 height=350,
                 xaxis=dict(title='Časová osa obchodů'),
-                yaxis=dict(title='Kumulativní PnL ($)')
+                yaxis=dict(title=f'Kumulativní PnL ({sym})')
             )
             st.plotly_chart(fig, use_container_width=True)
             st.markdown("---")
@@ -658,9 +690,9 @@ with tab4:
                     q_dir = st.selectbox("Směr", ["Long", "Short"], key="q_dir")
                 with q_col2:
                     q_date = st.date_input("Datum obchodu", value=date.today())
-                    q_pnl = st.number_input("Zisk (+) / Ztráta (-) v penězích", value=150.0)
+                    q_pnl = st.number_input(f"Zisk (+) / Ztráta (-) v {selected_acc_curr}", value=150.0)
                     q_pct_prev = (q_pnl / selected_acc_init) * 100 if selected_acc_init > 0 else 0.0
-                    st.caption(f"📊 Dopad: **{q_pct_prev:+.2f}%** z kapitálu (${selected_acc_init:,.2f})")
+                    st.caption(f"📊 Dopad: **{q_pct_prev:+.2f}%** z kapitálu")
                     q_r = st.number_input("Dosažené R", value=2.0)
                 
                 q_submit = st.form_submit_button("💾 Uložit obchod")
@@ -671,10 +703,10 @@ with tab4:
                         INSERT INTO trades (
                             account_id, ticker, direction, entry_time, actual_r, pnl_amount,
                             htf_generals_check, market_phase, engine_ma_fan, 
-                            signature_entry, fresh_zone, notes_emotions, inverted_chart
-                        ) VALUES (?, ?, ?, ?, ?, ?, 1, 'Kalendářní zápis', 1, 1, 1, 'Zapsáno přes kalendář', 0)
+                            signature_entry, fresh_zone, notes_emotions, inverted_chart, partials, currency
+                        ) VALUES (?, ?, ?, ?, ?, ?, 1, 'Kalendářní zápis', 1, 1, 1, 'Zapsáno přes kalendář', 0, '', ?)
                     ''', (
-                        selected_acc_id, q_ticker, q_dir, q_date.strftime("%Y-%m-%d %H:%M"), q_r, q_pnl
+                        selected_acc_id, q_ticker, q_dir, q_date.strftime("%Y-%m-%d %H:%M"), q_r, q_pnl, selected_acc_curr
                     ))
                     conn_q.commit()
                     conn_q.close()
@@ -687,7 +719,6 @@ with tab4:
         if 'cal_month' not in st.session_state:
             st.session_state.cal_month = date.today().month
 
-        # Ovládací panel s tlačítky pro překlikávání
         col_nav1, col_nav2, col_nav3 = st.columns([1, 2, 1])
         with col_nav1:
             if st.button("◀ Předchozí měsíc", use_container_width=True):
@@ -717,7 +748,6 @@ with tab4:
 
         st.markdown("---")
 
-        # Zpracování dat pro mřížku
         if not dash_trades.empty:
             daily_agg = dash_trades.groupby(dash_trades['date_parsed'].dt.date).agg(
                 daily_pnl=('pnl_amount', 'sum'),
@@ -729,7 +759,6 @@ with tab4:
         else:
             pnl_by_date = {}
 
-        # Hlavička dnů v týdnu (Pondělí až Neděle)
         days_header = ["Pondělí", "Úterý", "Středa", "Čtvrtek", "Pátek", "Sobota", "Neděle"]
         header_cols = st.columns(7)
         for idx, day_name in enumerate(days_header):
@@ -755,12 +784,12 @@ with tab4:
                             wrate = data['win_rate']
                             
                             card_class = "cal-card-green" if dpnl >= 0 else "cal-card-red"
-                            sign = "+" if dpnl >= 0 else ""
+                            znamenko = "+" if dpnl >= 0 else ""
                             
                             st.markdown(f"""
                                 <div class="{card_class}">
                                     <div style="font-size: 12px; color: #8b949e; font-weight: bold;">{formatted_date_cz}</div>
-                                    <div style="font-size: 17px; font-weight: bold; margin: 4px 0;">{sign}${dpnl:,.2f}</div>
+                                    <div style="font-size: 17px; font-weight: bold; margin: 4px 0;">{znamenko}{sym}{dpnl:,.2f}</div>
                                     <div style="font-size: 11px; color: #c9d1d9;">{tcount} obchod{'y' if tcount > 1 else ''} | {wrate:.1f}%</div>
                                 </div>
                             """, unsafe_allow_html=True)
@@ -772,7 +801,6 @@ with tab4:
                                 </div>
                             """, unsafe_allow_html=True)
 
-        # --- INTERAKTIVNÍ DETAIL DNE S MOŽNOSTÍ ÚPRAVY DATA ---
         st.markdown("---")
         st.subheader("🔍 Detail obchodů pro vybraný den")
         
@@ -792,33 +820,30 @@ with tab4:
                     dt_time_str = dt['entry_time']
                     dt_pnl = dt['pnl_amount']
                     dt_r = dt['actual_r']
+                    dt_curr = dt['currency']
                     
-                    try:
-                        parsed_dt = datetime.strptime(dt_time_str, "%Y-%m-%d %H:%M")
-                    except ValueError:
-                        parsed_dt = datetime.now()
+                    try: parsed_dt = datetime.strptime(dt_time_str, "%Y-%m-%d %H:%M")
+                    except ValueError: parsed_dt = datetime.now()
                     
                     trade_pct_item = (dt_pnl / selected_acc_init) * 100 if selected_acc_init > 0 else 0.0
                     badge = "🟢" if dt_pnl >= 0 else "🔴"
-                    header_str = f"{badge} Obchod #{dt_id} | Čas: {dt_time_str} | Pár: {dt_ticker} ({dt_dir}) | PnL: {dt_pnl:+,.2f} USD ({trade_pct_item:+.2f}%) | {dt_r} R"
+                    header_str = f"{badge} Obchod #{dt_id} | Čas: {dt_time_str} | Pár: {dt_ticker} ({dt_dir}) | PnL: {dt_pnl:+,.2f} {dt_curr} ({trade_pct_item:+.2f}%) | {dt_r} R"
                     
                     with st.expander(header_str):
-                        # --- FORMULÁŘ PRO ÚPRAVU DATA, PnL A PARAMETRŮ OBCHODU ---
                         with st.form(key=f"edit_day_trade_{dt_id}"):
                             st.write("✏️ **Úprava detailů a data obchodu:**")
                             e_col1, e_col2, e_col3 = st.columns(3)
                             with e_col1:
-                                new_trade_date = st.date_input("Datum obchodu", value=parsed_dt.date(), key=f"date_{dt_id}")
-                                new_ticker = st.text_input("Ticker / Pár", value=dt_ticker, key=f"tck_{dt_id}")
+                                new_trade_date = st.date_input("Datum", value=parsed_dt.date(), key=f"date_{dt_id}")
+                                new_ticker = st.text_input("Pár", value=dt_ticker, key=f"tck_{dt_id}")
                             with e_col2:
-                                new_pnl = st.number_input("Zisk (+) / Ztráta (-) v penězích", value=float(dt_pnl), key=f"pnl_d_{dt_id}")
-                                edit_pct = (new_pnl / selected_acc_init) * 100 if selected_acc_init > 0 else 0.0
-                                st.caption(f"📊 Dopad: **{edit_pct:+.2f}%** z kapitálu")
+                                new_pnl = st.number_input(f"Zisk/Ztráta", value=float(dt_pnl), key=f"pnl_d_{dt_id}")
                                 new_r = st.number_input("Dosažené R", value=float(dt_r), key=f"r_d_{dt_id}")
                             with e_col3:
                                 new_dir = st.selectbox("Směr", ["Long", "Short"], index=0 if dt_dir=="Long" else 1, key=f"dir_{dt_id}")
+                                new_partials_d = st.text_input("Partials", value=str(dt.get('partials', '')) if pd.notna(dt.get('partials')) else "", key=f"part_d_{dt_id}")
                                 
-                            update_full_btn = st.form_submit_button("💾 Uložit změny (včetně nového data)")
+                            update_full_btn = st.form_submit_button("💾 Uložit změny")
                             if update_full_btn:
                                 original_time_part = parsed_dt.strftime("%H:%M")
                                 new_full_datetime_str = f"{new_trade_date.strftime('%Y-%m-%d')} {original_time_part}"
@@ -827,9 +852,9 @@ with tab4:
                                 cur_upd = conn_upd.cursor()
                                 cur_upd.execute('''
                                     UPDATE trades 
-                                    SET entry_time = ?, ticker = ?, direction = ?, pnl_amount = ?, actual_r = ? 
+                                    SET entry_time = ?, ticker = ?, direction = ?, pnl_amount = ?, actual_r = ?, partials = ? 
                                     WHERE id = ?
-                                ''', (new_full_datetime_str, new_ticker, new_dir, new_pnl, new_r, dt_id))
+                                ''', (new_full_datetime_str, new_ticker, new_dir, new_pnl, new_r, new_partials_d, dt_id))
                                 conn_upd.commit()
                                 conn_upd.close()
                                 st.success("Obchod byl úspěšně upraven a přesunut na nové datum!")
@@ -845,7 +870,7 @@ with tab4:
                             st.write(f"- Signature: {'✅' if dt.get('signature_entry') else '❌'}")
                             st.write(f"- Zóna: {'✅' if dt.get('fresh_zone') else '❌'}")
                             st.write(f"- Inverted Chart: {'✅' if dt.get('inverted_chart') else '❌'}")
-                            st.info(f"**Poznámka:** {dt.get('notes_emotions', 'Žádné poznámky')}")
+                            st.write(f"- Partials: `{dt.get('partials') if pd.notna(dt.get('partials')) and dt.get('partials') != '' else 'Žádné'}`")
                         
                         with col_r:
                             if dt.get('image_data') is not None:
@@ -868,14 +893,13 @@ with tab4:
                 label="⬇️ Stáhnout kompletní zálohu účtu v CSV (Excel)",
                 data=csv_data,
                 file_name=f'trading_backup_{dash_account_name}_{date.today()}.csv',
-                mime='text/csv',
-                help="Stáhne ti všechna data kromě obrázků pro další analýzu v Excelu."
+                mime='text/csv'
             )
         else:
             st.info("Zatím nejsou zapsané žádné obchody pro export.")
 
 # ==========================================
-# ZÁLOŽKA 5: Ekonomický kalendář (CZ + Místní čas)
+# ZÁLOŽKA 5: Ekonomický kalendář
 # ==========================================
 with tab5:
     st.subheader("🌍 Živý ekonomický kalendář")
