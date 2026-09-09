@@ -2,7 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 import json
 from PIL import Image
-import sqlite3
+import psycopg2
 from datetime import datetime, date
 import pandas as pd
 import io
@@ -24,78 +24,9 @@ def get_sym(curr):
     elif curr == "CZK": return "Kč"
     return "$"
 
-# --- 1. DATABÁZE (SQLite) ---
-def init_db():
-    conn = sqlite3.connect('trading_journal.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS accounts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            initial_balance REAL NOT NULL
-        );
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_id INTEGER,
-            ticker TEXT NOT NULL,
-            direction TEXT NOT NULL,
-            entry_time TEXT NOT NULL,
-            actual_r REAL,
-            pnl_amount REAL,
-            htf_generals_check BOOLEAN,
-            market_phase TEXT,
-            engine_ma_fan BOOLEAN,
-            signature_entry BOOLEAN,
-            fresh_zone BOOLEAN,
-            notes_emotions TEXT,
-            image_data BLOB,
-            FOREIGN KEY (account_id) REFERENCES accounts (id)
-        );
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS trade_images (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            trade_id INTEGER NOT NULL,
-            image_data BLOB NOT NULL,
-            FOREIGN KEY (trade_id) REFERENCES trades (id) ON DELETE CASCADE
-        );
-    ''')
-    
-    columns_to_add = [
-        ("status", "TEXT DEFAULT 'Closed'"),
-        ("risk_amount", "REAL DEFAULT 0.0"),
-        ("sl_be_value", "REAL DEFAULT 0.0"),
-        ("partials_log", "TEXT DEFAULT ''"),
-        ("account_id", "INTEGER"),
-        ("inverted_chart", "BOOLEAN DEFAULT 0"),
-        ("partial_pnl", "REAL DEFAULT 0.0"),
-        ("currency", "TEXT DEFAULT 'USD'"),
-        ("initial_lots", "REAL DEFAULT 0.0"),
-        ("closed_lots", "REAL DEFAULT 0.0"),
-        ("main_image_label", "TEXT DEFAULT 'Vstupní graf'"),
-        ("post_trade_notes", "TEXT DEFAULT ''"),
-        ("trading_session", "TEXT DEFAULT 'Neznámá'"),
-        ("emotion_score", "INTEGER DEFAULT 5")
-    ]
-    
-    for col, dtype in columns_to_add:
-        try: cursor.execute(f"ALTER TABLE trades ADD COLUMN {col} {dtype};")
-        except sqlite3.OperationalError: pass
-        
-    try: cursor.execute("ALTER TABLE accounts ADD COLUMN currency TEXT DEFAULT 'USD';")
-    except sqlite3.OperationalError: pass
-    try: cursor.execute("ALTER TABLE trade_images ADD COLUMN image_label TEXT DEFAULT 'Screenshot';")
-    except sqlite3.OperationalError: pass
-        
-    conn.commit()
-    conn.close()
-
-init_db()
+# --- FUNKCE PRO PŘIPOJENÍ K SUPABASE CLOUDU ---
+def get_db_connection():
+    return psycopg2.connect(st.secrets["DB_URL"])
 
 # --- 2. KONFIGURACE AI ---
 try:
@@ -105,7 +36,7 @@ except Exception:
 
 if API_KEY:
     genai.configure(api_key=API_KEY)
-    model = genai.GenerativeModel('models/gemini-3.6-flash')
+    model = genai.GenerativeModel('models/gemini-1.5-flash')
 else:
     model = None
 
@@ -173,7 +104,7 @@ if menu_selection == "➕ Nový obchod (Vstup)":
     st.markdown("---")
     st.write(" Nahraj screenshoty grafu a zadej parametry svého **vstupu do obchodu**.")
     
-    conn = sqlite3.connect('trading_journal.db')
+    conn = get_db_connection()
     accounts_df = pd.read_sql_query("SELECT id, name, initial_balance, COALESCE(currency, 'USD') as currency FROM accounts", conn)
     conn.close()
     
@@ -276,7 +207,7 @@ if menu_selection == "➕ Nový obchod (Vstup)":
             submit_entry = st.form_submit_button(label="🚀 Otevřít obchod (Uložit pro následné řízení)")
             
             if submit_entry:
-                conn = sqlite3.connect('trading_journal.db')
+                conn = get_db_connection()
                 cursor = conn.cursor()
                 
                 cursor.execute('''
@@ -286,20 +217,21 @@ if menu_selection == "➕ Nový obchod (Vstup)":
                         market_phase, notes_emotions, image_data, inverted_chart, 
                         partial_pnl, currency, initial_lots, closed_lots, status, risk_amount, 
                         sl_be_value, partials_log, main_image_label, post_trade_notes, trading_session, emotion_score
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
                 ''', (
                     selected_acc_id, ticker, direction, datetime.now().strftime("%Y-%m-%d %H:%M"), 
                     0.0, 0.0,
                     step1_mb1, step2_liq, step3_fan, step4_mb2, 
-                    "Double MB", notes, prepared_images[0][0], inverted_chart_check, 
+                    "Double MB", notes, psycopg2.Binary(prepared_images[0][0]), inverted_chart_check, 
                     0.0, trade_currency, lots_input, 0.0, 'Open', risk_input, 
                     risk_input, "", prepared_images[0][1], "", trading_session, emotion_score
                 ))
-                trade_id = cursor.lastrowid
+                trade_id = cursor.fetchone()[0]
                 
                 if len(prepared_images) > 1:
                     for img_bytes, lbl in prepared_images[1:]:
-                        cursor.execute("INSERT INTO trade_images (trade_id, image_data, image_label) VALUES (?, ?, ?)", (trade_id, img_bytes, lbl))
+                        cursor.execute("INSERT INTO trade_images (trade_id, image_data, image_label) VALUES (%s, %s, %s)", (trade_id, psycopg2.Binary(img_bytes), lbl))
                 
                 conn.commit()
                 conn.close()
@@ -311,7 +243,7 @@ if menu_selection == "➕ Nový obchod (Vstup)":
 # ==========================================
 elif menu_selection == "⚙️ Řízení & Historie":
     
-    conn = sqlite3.connect('trading_journal.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         SELECT t.id, a.name, a.initial_balance, t.ticker, t.direction, t.entry_time, 
@@ -328,7 +260,7 @@ elif menu_selection == "⚙️ Řízení & Historie":
     trades = cursor.fetchall()
     conn.close()
 
-    conn = sqlite3.connect('trading_journal.db')
+    conn = get_db_connection()
     acc_filter_df = pd.read_sql_query("SELECT name FROM accounts", conn)
     conn.close()
     
@@ -388,9 +320,9 @@ elif menu_selection == "⚙️ Řízení & Historie":
                             log_entry = f"[{now_str}] Vybráno {p_lots} lotů | Zisk: {p_money:+.2f} {t_curr}\n"
                             new_log = t_part_log + log_entry
                             
-                            conn_p = sqlite3.connect('trading_journal.db')
+                            conn_p = get_db_connection()
                             c_p = conn_p.cursor()
-                            c_p.execute("UPDATE trades SET closed_lots = ?, partial_pnl = ?, partials_log = ? WHERE id = ?", (new_closed, new_part_pnl, new_log, t_id))
+                            c_p.execute("UPDATE trades SET closed_lots = %s, partial_pnl = %s, partials_log = %s WHERE id = %s", (new_closed, new_part_pnl, new_log, t_id))
                             conn_p.commit()
                             conn_p.close()
                             st.rerun()
@@ -406,9 +338,9 @@ elif menu_selection == "⚙️ Řízení & Historie":
                             log_entry = f"[{now_str}] Posun SL na: {new_sl_val:+.2f} {t_curr}\n"
                             new_log = t_part_log + log_entry
                             
-                            conn_be = sqlite3.connect('trading_journal.db')
+                            conn_be = get_db_connection()
                             c_be = conn_be.cursor()
-                            c_be.execute("UPDATE trades SET sl_be_value = ?, partials_log = ? WHERE id = ?", (new_sl_val, new_log, t_id))
+                            c_be.execute("UPDATE trades SET sl_be_value = %s, partials_log = %s WHERE id = %s", (new_sl_val, new_log, t_id))
                             conn_be.commit()
                             conn_be.close()
                             st.rerun()
@@ -425,9 +357,9 @@ elif menu_selection == "⚙️ Řízení & Historie":
                             log_entry = f"[{now_str}] Uzavřen zbytek pozice | Výsledek zbytku: {f_pnl:+.2f} {t_curr}\n"
                             new_log = t_part_log + log_entry
                             
-                            conn_c = sqlite3.connect('trading_journal.db')
+                            conn_c = get_db_connection()
                             c_c = conn_c.cursor()
-                            c_c.execute("UPDATE trades SET status = 'Closed', pnl_amount = ?, actual_r = ?, partials_log = ? WHERE id = ?", (f_pnl, f_r, new_log, t_id))
+                            c_c.execute("UPDATE trades SET status = 'Closed', pnl_amount = %s, actual_r = %s, partials_log = %s WHERE id = %s", (f_pnl, f_r, new_log, t_id))
                             conn_c.commit()
                             conn_c.close()
                             st.success("Obchod přesunut do Historie!")
@@ -457,27 +389,27 @@ elif menu_selection == "⚙️ Řízení & Historie":
                         new_post_notes = st.text_area("Tvé vlastní zápisky k řízení:", value=t_post_notes)
                         submit_notes = st.form_submit_button("💾 Uložit zápisky")
                         if submit_notes:
-                            conn_pn = sqlite3.connect('trading_journal.db')
+                            conn_pn = get_db_connection()
                             c_pn = conn_pn.cursor()
-                            c_pn.execute("UPDATE trades SET post_trade_notes = ? WHERE id = ?", (new_post_notes, t_id))
+                            c_pn.execute("UPDATE trades SET post_trade_notes = %s WHERE id = %s", (new_post_notes, t_id))
                             conn_pn.commit()
                             conn_pn.close()
                             st.rerun()
 
-                    st.write("---")
-                    if st.button("🗑️ Smazat tento otevřený obchod (Zrušit)", key=f"del_open_{t_id}"):
-                        conn_d = sqlite3.connect('trading_journal.db')
-                        c_d = conn_d.cursor()
-                        c_d.execute("DELETE FROM trade_images WHERE trade_id = ?", (t_id,))
-                        c_d.execute("DELETE FROM trades WHERE id = ?", (t_id,))
-                        conn_d.commit()
-                        conn_d.close()
-                        st.rerun()
+                st.write("---")
+                if st.button("🗑️ Smazat tento otevřený obchod (Zrušit)", key=f"del_open_{t_id}"):
+                    conn_d = get_db_connection()
+                    c_d = conn_d.cursor()
+                    c_d.execute("DELETE FROM trade_images WHERE trade_id = %s", (t_id,))
+                    c_d.execute("DELETE FROM trades WHERE id = %s", (t_id,))
+                    conn_d.commit()
+                    conn_d.close()
+                    st.rerun()
 
                 with st.expander("🖼️ Fotogalerie (Kliknutím fotku zvětšíš)"):
-                    conn_img = sqlite3.connect('trading_journal.db')
+                    conn_img = get_db_connection()
                     cursor_img = conn_img.cursor()
-                    cursor_img.execute("SELECT id, COALESCE(image_label, 'Screenshot'), image_data FROM trade_images WHERE trade_id = ?", (t_id,))
+                    cursor_img.execute("SELECT id, COALESCE(image_label, 'Screenshot'), image_data FROM trade_images WHERE trade_id = %s", (t_id,))
                     extra_images = cursor_img.fetchall()
                     conn_img.close()
                     
@@ -508,9 +440,9 @@ elif menu_selection == "⚙️ Řízení & Historie":
                         if extra_upload is not None:
                             if st.button(f"💾 Uložit foto", key=f"btn_save_ex_{t_id}"):
                                 extra_bytes = extra_upload.getvalue()
-                                conn_in = sqlite3.connect('trading_journal.db')
+                                conn_in = get_db_connection()
                                 cursor_in = conn_in.cursor()
-                                cursor_in.execute("INSERT INTO trade_images (trade_id, image_data, image_label) VALUES (?, ?, ?)", (t_id, extra_bytes, extra_label))
+                                cursor_in.execute("INSERT INTO trade_images (trade_id, image_data, image_label) VALUES (%s, %s, %s)", (t_id, psycopg2.Binary(extra_bytes), extra_label))
                                 conn_in.commit()
                                 conn_in.close()
                                 st.rerun()
@@ -539,10 +471,10 @@ elif menu_selection == "⚙️ Řízení & Historie":
             
             with st.expander(header):
                 if st.button("🗑️ Smazat tento obchod natrvalo", key=f"del_hist_{t_id}"):
-                    conn_d = sqlite3.connect('trading_journal.db')
+                    conn_d = get_db_connection()
                     c_d = conn_d.cursor()
-                    c_d.execute("DELETE FROM trade_images WHERE trade_id = ?", (t_id,))
-                    c_d.execute("DELETE FROM trades WHERE id = ?", (t_id,))
+                    c_d.execute("DELETE FROM trade_images WHERE trade_id = %s", (t_id,))
+                    c_d.execute("DELETE FROM trades WHERE id = %s", (t_id,))
                     conn_d.commit()
                     conn_d.close()
                     st.rerun()
@@ -576,17 +508,17 @@ elif menu_selection == "⚙️ Řízení & Historie":
                         new_post_notes = st.text_area("Tvé vlastní zápisky po uzavření obchodu:", value=t_post_notes)
                         submit_notes = st.form_submit_button("💾 Uložit zápisky")
                         if submit_notes:
-                            conn_pn = sqlite3.connect('trading_journal.db')
+                            conn_pn = get_db_connection()
                             c_pn = conn_pn.cursor()
-                            c_pn.execute("UPDATE trades SET post_trade_notes = ? WHERE id = ?", (new_post_notes, t_id))
+                            c_pn.execute("UPDATE trades SET post_trade_notes = %s WHERE id = %s", (new_post_notes, t_id))
                             conn_pn.commit()
                             conn_pn.close()
                             st.rerun()
                 
                 with st.expander("🖼️ Fotogalerie (Kliknutím fotku zvětšíš)"):
-                    conn_img = sqlite3.connect('trading_journal.db')
+                    conn_img = get_db_connection()
                     cursor_img = conn_img.cursor()
-                    cursor_img.execute("SELECT id, COALESCE(image_label, 'Screenshot'), image_data FROM trade_images WHERE trade_id = ?", (t_id,))
+                    cursor_img.execute("SELECT id, COALESCE(image_label, 'Screenshot'), image_data FROM trade_images WHERE trade_id = %s", (t_id,))
                     extra_images = cursor_img.fetchall()
                     conn_img.close()
                     
@@ -617,9 +549,9 @@ elif menu_selection == "⚙️ Řízení & Historie":
                         if extra_upload is not None:
                             if st.button(f"💾 Uložit fotku", key=f"btn_save_hist_{t_id}"):
                                 extra_bytes = extra_upload.getvalue()
-                                conn_in = sqlite3.connect('trading_journal.db')
+                                conn_in = get_db_connection()
                                 cursor_in = conn_in.cursor()
-                                cursor_in.execute("INSERT INTO trade_images (trade_id, image_data, image_label) VALUES (?, ?, ?)", (t_id, extra_bytes, extra_label))
+                                cursor_in.execute("INSERT INTO trade_images (trade_id, image_data, image_label) VALUES (%s, %s, %s)", (t_id, psycopg2.Binary(extra_bytes), extra_label))
                                 conn_in.commit()
                                 conn_in.close()
                                 st.rerun()
@@ -631,7 +563,7 @@ elif menu_selection == "⚙️ Řízení & Historie":
 elif menu_selection == "📊 Dashboard & Kalendář":
     st.subheader("📊 Výkonnostní Dashboard & Statistiky")
     
-    conn = sqlite3.connect('trading_journal.db')
+    conn = get_db_connection()
     acc_dash_df = pd.read_sql_query("SELECT id, name, initial_balance, COALESCE(currency, 'USD') as currency FROM accounts", conn)
     conn.close()
     
@@ -647,12 +579,12 @@ elif menu_selection == "📊 Dashboard & Kalendář":
         selected_acc_curr = selected_acc_row['currency']
         sym = get_sym(selected_acc_curr)
         
-        conn_d = sqlite3.connect('trading_journal.db')
+        conn_d = get_db_connection()
         fallback_query = '''
             SELECT t.id, t.ticker, t.direction, t.entry_time, t.actual_r, t.pnl_amount, t.htf_generals_check, t.market_phase, t.engine_ma_fan, t.signature_entry, t.fresh_zone, t.notes_emotions, t.image_data, t.inverted_chart, COALESCE(t.initial_lots, 0.0) as initial_lots, COALESCE(t.closed_lots, 0.0) as closed_lots, COALESCE(t.partial_pnl, 0.0) as partial_pnl, COALESCE(t.currency, 'USD') as currency, COALESCE(t.status, 'Closed') as status, COALESCE(t.partials_log, '') as partials_log, COALESCE(t.main_image_label, 'Vstupní graf') as main_image_label, COALESCE(t.post_trade_notes, '') as post_trade_notes, COALESCE(t.trading_session, 'Neznámá') as trading_session, COALESCE(t.emotion_score, 5) as emotion_score
             FROM trades t
             LEFT JOIN accounts a ON t.account_id = a.id
-            WHERE TRIM(a.name) = ? ORDER BY t.id ASC
+            WHERE TRIM(a.name) = %s ORDER BY t.id ASC
         '''
         dash_trades = pd.read_sql_query(fallback_query, conn_d, params=(dash_account_name,))
         conn_d.close()
@@ -1019,19 +951,19 @@ elif menu_selection == "📊 Dashboard & Kalendář":
                                 
                             st.write("---")
                             if st.button("🗑️ Smazat tento obchod natrvalo", key=f"del_cal_trade_{dt_id}"):
-                                conn_d = sqlite3.connect('trading_journal.db')
+                                conn_d = get_db_connection()
                                 c_d = conn_d.cursor()
-                                c_d.execute("DELETE FROM trade_images WHERE trade_id = ?", (dt_id,))
-                                c_d.execute("DELETE FROM trades WHERE id = ?", (dt_id,))
+                                c_d.execute("DELETE FROM trade_images WHERE trade_id = %s", (dt_id,))
+                                c_d.execute("DELETE FROM trades WHERE id = %s", (dt_id,))
                                 conn_d.commit()
                                 conn_d.close()
                                 st.success("Obchod smazán! Stránka se brzy obnoví...")
                                 st.rerun()
 
                         with st.expander("🖼️ Fotogalerie (Kliknutím fotku zvětšíš)"):
-                            conn_img_cal = sqlite3.connect('trading_journal.db')
+                            conn_img_cal = get_db_connection()
                             cursor_img_cal = conn_img_cal.cursor()
-                            cursor_img_cal.execute("SELECT id, COALESCE(image_label, 'Screenshot'), image_data FROM trade_images WHERE trade_id = ?", (dt_id,))
+                            cursor_img_cal.execute("SELECT id, COALESCE(image_label, 'Screenshot'), image_data FROM trade_images WHERE trade_id = %s", (dt_id,))
                             extra_images_cal = cursor_img_cal.fetchall()
                             conn_img_cal.close()
                             
@@ -1056,29 +988,16 @@ elif menu_selection == "📊 Dashboard & Kalendář":
                 
         # --- ZÁLOHA DAT A DATABÁZE ---
         st.markdown("---")
-        st.markdown("### 💾 Export a záloha dat")
-        c_down1, c_down2 = st.columns(2)
-        with c_down1:
-            if not dash_trades.empty:
-                csv_data = dash_trades.drop(columns=['image_data']).to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="⬇️ Stáhnout Excel/CSV (Jen textová data)",
-                    data=csv_data,
-                    file_name=f'trading_backup_{dash_account_name}_{date.today()}.csv',
-                    mime='text/csv'
-                )
-        with c_down2:
-            try:
-                db_data = open('trading_journal.db', 'rb').read()
-                st.download_button(
-                    label="💾 Stáhnout kompletní databázi (.db)",
-                    data=db_data,
-                    file_name=f'trading_journal_FULL_BACKUP.db',
-                    mime='application/octet-stream',
-                    help="Tohle je tvůj celý deník. Před nahráváním nového kódu na GitHub si tohle VŽDY stáhni do PC, ať o nic nepřijdeš!"
-                )
-            except Exception:
-                pass
+        st.markdown("### 💾 Export dat")
+        st.info("Databáze se nyní automaticky a nepřetržitě zálohuje na cloudových serverech Supabase, o data tak už nepřijdeš. Zde si můžeš stáhnout textový export pro Excel.")
+        if not dash_trades.empty:
+            csv_data = dash_trades.drop(columns=['image_data']).to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="⬇️ Stáhnout Excel/CSV (Textová data k analýze)",
+                data=csv_data,
+                file_name=f'trading_backup_{dash_account_name}_{date.today()}.csv',
+                mime='text/csv'
+            )
 
 
 # ==========================================
@@ -1132,20 +1051,20 @@ elif menu_selection == "💼 Správa účtů":
                     st.error("Zadej platný název účtu!")
                 else:
                     try:
-                        conn = sqlite3.connect('trading_journal.db')
+                        conn = get_db_connection()
                         cursor = conn.cursor()
-                        cursor.execute("INSERT INTO accounts (name, initial_balance, currency) VALUES (?, ?, ?)", (clean_name, acc_initial, acc_currency))
+                        cursor.execute("INSERT INTO accounts (name, initial_balance, currency) VALUES (%s, %s, %s)", (clean_name, acc_initial, acc_currency))
                         conn.commit()
                         conn.close()
                         st.success(f"Účet '{clean_name}' byl úspěšně vytvořen v {acc_currency}!")
                         st.rerun()
-                    except sqlite3.IntegrityError:
+                    except psycopg2.IntegrityError:
                         st.error("Účet s tímto názvem již existuje!")
 
     st.markdown("---")
     st.subheader("📊 Seznam účtů a úprava základů")
     
-    conn = sqlite3.connect('trading_journal.db')
+    conn = get_db_connection()
     accounts_summary_query = '''
         SELECT a.id, a.name, a.initial_balance, COALESCE(a.currency, 'USD') as currency,
                COALESCE(SUM(t.pnl_amount + COALESCE(t.partial_pnl, 0.0)), 0) as total_pnl,
@@ -1187,9 +1106,9 @@ elif menu_selection == "💼 Správa účtů":
                     
                     update_btn = st.form_submit_button(f"💾 Uložit změny pro {acc_name}")
                     if update_btn:
-                        conn_up = sqlite3.connect('trading_journal.db')
+                        conn_up = get_db_connection()
                         cursor_up = conn_up.cursor()
-                        cursor_up.execute("UPDATE accounts SET initial_balance = ?, currency = ? WHERE id = ?", (new_base, new_acc_curr, acc_id))
+                        cursor_up.execute("UPDATE accounts SET initial_balance = %s, currency = %s WHERE id = %s", (new_base, new_acc_curr, acc_id))
                         conn_up.commit()
                         conn_up.close()
                         st.success(f"Základ pro účet '{acc_name}' byl aktualizován!")
