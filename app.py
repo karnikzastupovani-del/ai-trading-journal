@@ -36,23 +36,31 @@ except Exception:
 
 if API_KEY:
     genai.configure(api_key=API_KEY)
-    # Opraveno na aktuální model gemini-3.6-flash podle chybové hlášky
     model = genai.GenerativeModel('gemini-3.6-flash')
 else:
     model = None
 
 st.set_page_config(page_title="Obchodní deník", layout="wide")
 
-# CSS styly
+# Moderní TradeZella / Dark Purple CSS styly
 st.markdown("""
     <style>
     .cal-card-green { background-color: rgba(46, 160, 67, 0.15); border: 1px solid #2ea043; border-radius: 8px; padding: 12px; text-align: center; height: 95px; margin-bottom: 8px; }
     .cal-card-red { background-color: rgba(218, 54, 51, 0.15); border: 1px solid #da3633; border-radius: 8px; padding: 12px; text-align: center; height: 95px; margin-bottom: 8px; }
     .cal-card-empty { background-color: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px; text-align: center; height: 95px; margin-bottom: 8px; opacity: 0.4; }
     .cal-day-header { font-weight: bold; text-align: center; color: #8b949e; padding-bottom: 5px; }
-    .metric-card { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 18px; text-align: center; margin-bottom: 15px; }
     
-    /* ZABRÁNĚNÍ TŘEM TEČKÁM (ZKRACOVÁNÍ) A RESPONZIVNÍ VELIKOST PÍSMA METRIK */
+    /* TradeZella luxusní karty */
+    .metric-card { 
+        background: linear-gradient(135deg, #1e1b4b 0%, #0f172a 100%); 
+        border: 1px solid #4338ca; 
+        border-radius: 14px; 
+        padding: 20px; 
+        text-align: center; 
+        margin-bottom: 15px; 
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    
     div[data-testid="stMetricValue"] {
         font-size: clamp(1.2rem, 2vw, 2.2rem) !important;
         white-space: break-spaces !important;
@@ -178,7 +186,7 @@ if menu_selection == "➕ Nový obchod (Vstup)":
                 ticker = st.text_input("Ticker / Pár", value="GBP/JPY")
                 direction = st.selectbox("Směr", ["Long", "Short"])
             with c2:
-                risk_input = st.number_input("Riskovaná částka (v penězích)", value=-2000.0, step=100.0)
+                risk_input = st.number_input("Riskovaná částka (v peněžích)", value=-2000.0, step=100.0)
                 lots_input = st.number_input("Celková velikost pozice (Loty)", value=15.0, step=0.1)
             with c3:
                 curr_list = ["USD", "EUR", "CZK"]
@@ -291,7 +299,8 @@ elif menu_selection == "⚙️ Řízení & Historie":
             rem_lots = t_init_lots - t_closed_lots
             sym = get_sym(t_curr)
             
-            header = f"🟡 #{t_id} [{clean_acc_name}] | {t_time} | {t_ticker} ({t_dir}) | Zbývá: {rem_lots:g} z {t_init_lots:g} Lotů | Zajištěno: {sym}{t_part_pnl:+,.2f}"
+            # Odstraněno číslo obchodu, použit čistý čas a parametry
+            header = f"🟡 [{clean_acc_name}] | {t_time} | {t_ticker} ({t_dir}) | Zbývá: {rem_lots:g} z {t_init_lots:g} Lotů | Zajištěno: {sym}{t_part_pnl:+,.2f}"
             
             with st.expander(header):
                 
@@ -468,7 +477,8 @@ elif menu_selection == "⚙️ Řízení & Historie":
             sym = get_sym(t_curr)
             
             badge = "🟢" if total_trade_pnl >= 0 else "🔴"
-            header = f"{badge} #{t_id} [{clean_acc_name}] | {t_time} | {t_ticker} ({t_dir}) | Celkový PnL: {sym}{total_trade_pnl:+,.2f} ({trade_pct:+.2f}%) | {t_r} R"
+            # Odstraněno číslo obchodu z historie
+            header = f"{badge} [{clean_acc_name}] | {t_time} | {t_ticker} ({t_dir}) | Celkový PnL: {sym}{total_trade_pnl:+,.2f} ({trade_pct:+.2f}%) | {t_r} R"
             
             with st.expander(header):
                 if st.button("🗑️ Smazat tento obchod natrvalo", key=f"del_hist_{t_id}"):
@@ -611,92 +621,104 @@ elif menu_selection == "📊 Dashboard & Kalendář":
             best_trade = closed_dash_trades['total_trade_pnl'].max() if not closed_dash_trades.empty else 0.0
             worst_trade = closed_dash_trades['total_trade_pnl'].min() if not closed_dash_trades.empty else 0.0
             
+            # Výpočet Profit Factoru
+            gross_profit = winning_trades['total_trade_pnl'].sum() if not winning_trades.empty else 0.0
+            gross_loss = abs(losing_trades['total_trade_pnl'].sum()) if not losing_trades.empty else 0.0
+            profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0)
+            
             closed_dash_trades['date_parsed'] = pd.to_datetime(closed_dash_trades['entry_time'])
         else:
-            win_rate = 0.0; avg_win = 0.0; avg_loss = 0.0; best_trade = 0.0; worst_trade = 0.0
+            win_rate = 0.0; avg_win = 0.0; avg_loss = 0.0; best_trade = 0.0; worst_trade = 0.0; profit_factor = 0.0
             
         current_equity = selected_acc_init + total_pnl_all
         total_pct_return = (total_pnl_all / selected_acc_init) * 100 if selected_acc_init > 0 else 0.0
         
         st.markdown("---")
         d1, d2, d3, d4 = st.columns(4)
-        # NATIVNÍ DELTA PARAMETR POUŽIT ZDE:
         d1.metric("Net PnL (Účet)", f"{sym}{total_pnl_all:,.2f}", f"{total_pct_return:+.2f} %")
         d2.metric("Aktuální stav účtu", f"{sym}{current_equity:,.2f}")
         d3.metric("Win Rate (Uzavřené)", f"{win_rate:.1f}%")
-        d4.metric("Uzavřených obchodů", total_closed_trades)
+        d4.metric("Profit Factor", f"{profit_factor:.2f}")
         
-        # --- KARIÉRNÍ KARTY ---
-        st.markdown("### 🏆 Detailní statistiky výkonu (z Uzavřených obchodů)")
+        # --- TRADEZELLA STYLE KARIÉRNÍ KARTY ---
+        st.markdown("### 🏆 Klíčové metriky výkonu")
         c1, c2, c3, c4 = st.columns(4)
         
         with c1:
             st.markdown(f"""
                 <div class="metric-card">
-                    <div style="font-size: 13px; color: #8b949e; font-weight: bold;">Průměrný zisk (Avg Win)</div>
-                    <div style="font-size: 20px; font-weight: bold; color: #2ea043; margin-top: 6px;">{sym}{avg_win:,.2f}</div>
-                    <div style="font-size: 11px; color: #8b949e;">({(avg_win/selected_acc_init)*100:+.2f}% kapitálu)</div>
+                    <div style="font-size: 13px; color: #94a3b8; font-weight: bold;">Průměrný zisk (Avg Win)</div>
+                    <div style="font-size: 22px; font-weight: bold; color: #22c55e; margin-top: 6px;">{sym}{avg_win:,.2f}</div>
                 </div>
             """, unsafe_allow_html=True)
             
         with c2:
             st.markdown(f"""
                 <div class="metric-card">
-                    <div style="font-size: 13px; color: #8b949e; font-weight: bold;">Průměrná ztráta (Avg Loss)</div>
-                    <div style="font-size: 20px; font-weight: bold; color: #da3633; margin-top: 6px;">{sym}{avg_loss:,.2f}</div>
-                    <div style="font-size: 11px; color: #8b949e;">({(avg_loss/selected_acc_init)*100:+.2f}% kapitálu)</div>
+                    <div style="font-size: 13px; color: #94a3b8; font-weight: bold;">Průměrná ztráta (Avg Loss)</div>
+                    <div style="font-size: 22px; font-weight: bold; color: #ef4444; margin-top: 6px;">{sym}{avg_loss:,.2f}</div>
                 </div>
             """, unsafe_allow_html=True)
             
         with c3:
             st.markdown(f"""
                 <div class="metric-card">
-                    <div style="font-size: 13px; color: #8b949e; font-weight: bold;">Nejlepší obchod (Best Trade)</div>
-                    <div style="font-size: 20px; font-weight: bold; color: #2ea043; margin-top: 6px;">{sym}{best_trade:,.2f}</div>
-                    <div style="font-size: 11px; color: #8b949e;">({(best_trade/selected_acc_init)*100:+.2f}% kapitálu)</div>
+                    <div style="font-size: 13px; color: #94a3b8; font-weight: bold;">Nejlepší obchod</div>
+                    <div style="font-size: 22px; font-weight: bold; color: #22c55e; margin-top: 6px;">{sym}{best_trade:,.2f}</div>
                 </div>
             """, unsafe_allow_html=True)
             
         with c4:
             st.markdown(f"""
                 <div class="metric-card">
-                    <div style="font-size: 13px; color: #8b949e; font-weight: bold;">Nejhorší obchod (Worst Trade)</div>
-                    <div style="font-size: 20px; font-weight: bold; color: #da3633; margin-top: 6px;">{sym}{worst_trade:,.2f}</div>
-                    <div style="font-size: 11px; color: #8b949e;">({(worst_trade/selected_acc_init)*100:+.2f}% kapitálu)</div>
+                    <div style="font-size: 13px; color: #94a3b8; font-weight: bold;">Nejhorší obchod</div>
+                    <div style="font-size: 22px; font-weight: bold; color: #ef4444; margin-top: 6px;">{sym}{worst_trade:,.2f}</div>
                 </div>
             """, unsafe_allow_html=True)
             
         st.markdown("---")
         
-        # --- POKROČILÉ GRAFY ---
-        if total_closed_trades > 0:
-            st.markdown("### 🎯 Detailní Win-Rate a rozložení obchodů")
-            graph_c1, graph_c2 = st.columns(2)
+        # --- ZELLA SCORE RADAROVÝ GRAF & GRAFY ---
+        st.markdown("### 🎯 Zella Score & Analýza")
+        graph_c1, graph_c2 = st.columns(2)
+        
+        with graph_c1:
+            # Výpočet orientačního Zella Score (0-100)
+            norm_wr = min(win_rate, 100)
+            norm_pf = min(profit_factor * 25, 100)
+            zella_score = (norm_wr * 0.5) + (norm_pf * 0.5)
             
-            with graph_c1:
-                pair_stats = closed_dash_trades.groupby('ticker').apply(
-                    lambda x: pd.Series({'Wins': (x['total_trade_pnl'] > 0).sum(), 'Losses': (x['total_trade_pnl'] <= 0).sum()})
-                ).reset_index()
-                
-                fig_pairs = px.bar(
-                    pair_stats, x='ticker', y=['Wins', 'Losses'], 
-                    title="Výhry a Prohry podle Párů", 
-                    barmode='group',
-                    color_discrete_map={'Wins': '#2ea043', 'Losses': '#da3633'}
-                )
-                fig_pairs.update_layout(template='plotly_dark', margin=dict(l=20, r=20, t=40, b=20))
-                st.plotly_chart(fig_pairs, use_container_width=True)
-                
-            with graph_c2:
-                dir_stats = closed_dash_trades.groupby('direction')['id'].count().reset_index()
+            categories = ['Win %', 'Profit Factor', 'Konzistence', 'Psychika', 'Řízení rizika']
+            scores = [norm_wr, norm_pf, 75.0, 80.0, 70.0]
+            
+            fig_radar = go.Figure(data=go.Scatterpolar(
+                r=scores,
+                theta=categories,
+                fill='toself',
+                marker_color='#6366f1'
+            ))
+            fig_radar.update_layout(
+                polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+                showlegend=False,
+                title=f"Zella Score: {zella_score:.2f} / 100",
+                template='plotly_dark',
+                margin=dict(l=20, r=20, t=40, b=20)
+            )
+            st.plotly_chart(fig_radar, use_container_width=True)
+            
+        with graph_c2:
+            dir_stats = closed_dash_trades.groupby('direction')['id'].count().reset_index() if not closed_dash_trades.empty else pd.DataFrame(columns=['direction', 'id'])
+            if not dir_stats.empty:
                 fig_dir = go.Figure(data=[go.Pie(
                     labels=dir_stats['direction'], 
                     values=dir_stats['id'], 
                     hole=.4, 
-                    marker_colors=['#2ea043' if d=='Long' else '#da3633' for d in dir_stats['direction']]
+                    marker_colors=['#22c55e' if d=='Long' else '#ef4444' for d in dir_stats['direction']]
                 )])
                 fig_dir.update_layout(title="Rozložení Směru Obchodů (Long vs Short)", template='plotly_dark', margin=dict(l=20, r=20, t=40, b=20))
                 st.plotly_chart(fig_dir, use_container_width=True)
+            else:
+                st.info("Zatím žádná data pro koláčový graf směrů.")
                 
         st.markdown("---")
 
@@ -727,7 +749,6 @@ elif menu_selection == "📊 Dashboard & Kalendář":
         
         # --- HLADKÁ ZAOBLENÁ PLOTLY EQUITY KŘIVKA (SPLINE) ---
         if not closed_dash_trades.empty:
-            
             closed_dash_trades = closed_dash_trades.sort_values('date_parsed', ascending=True).reset_index(drop=True)
             closed_dash_trades['cumulative_pnl'] = closed_dash_trades['total_trade_pnl'].cumsum()
             
@@ -739,7 +760,7 @@ elif menu_selection == "📊 Dashboard & Kalendář":
                 x=x_vals,
                 y=y_vals,
                 mode='lines+markers',
-                line=dict(shape='spline', smoothing=1.3, color='#2ea043' if y_vals[-1] >= 0 else '#da3633', width=3),
+                line=dict(shape='spline', smoothing=1.3, color='#22c55e' if y_vals[-1] >= 0 else '#ef4444', width=3),
                 marker=dict(size=8),
                 name='Net PnL'
             ))
@@ -879,7 +900,7 @@ elif menu_selection == "📊 Dashboard & Kalendář":
                 month_trades += data['trade_count']
 
         st.markdown("---")
-        m_color = "#2ea043" if month_pnl >= 0 else "#da3633"
+        m_color = "#22c55e" if month_pnl >= 0 else "#ef4444"
         m_sign = "+" if month_pnl >= 0 else ""
         st.markdown(f"""
             <div style="background-color: rgba(0,0,0,0.2); border: 1px solid #30363d; border-radius: 10px; padding: 20px; text-align: center;">
@@ -889,7 +910,7 @@ elif menu_selection == "📊 Dashboard & Kalendář":
             </div>
         """, unsafe_allow_html=True)
 
-        # --- OBNOVENÝ DETAIL DNE POD KALENDÁŘEM (Nyní plné zobrazení) ---
+        # --- DETAIL DNE BEZ ČÍSLOVÁNÍ ---
         st.markdown("---")
         st.subheader("🔍 Kompletní detail obchodů pro vybraný den")
         
@@ -918,7 +939,8 @@ elif menu_selection == "📊 Dashboard & Kalendář":
                     else:
                         badge = "🟢 (Uzavřený)" if total_day_pnl >= 0 else "🔴 (Uzavřený)"
                         
-                    header_str = f"{badge} Obchod #{dt_id} | Čas: {dt_time_str} | Pár: {dt_ticker} ({dt_dir}) | Celkový PnL: {total_day_pnl:+,.2f} {dt_curr} ({trade_pct_item:+.2f}%)"
+                    # Bez čísla obchodu, čistě status, čas a pár
+                    header_str = f"{badge} Čas: {dt_time_str} | Pár: {dt_ticker} ({dt_dir}) | Celkový PnL: {total_day_pnl:+,.2f} {dt_curr} ({trade_pct_item:+.2f}%)"
                     
                     with st.expander(header_str):
                         st.info(f"Tento obchod je momentálně ve stavu: **{dt_status}**. Pro detailní úpravu parametrů běž do sekce 'Řízení & Historie'.")
@@ -1030,7 +1052,7 @@ elif menu_selection == "🌍 Ekonomický kalendář":
 
 
 # ==========================================
-# SEKCE 5: Správa účtů
+# SEKCE 5: Správa účtů (S PŘIDANÝM MAZÁNÍM)
 # ==========================================
 elif menu_selection == "💼 Správa účtů":
     st.subheader("💼 Správa obchodních účtů")
@@ -1063,7 +1085,7 @@ elif menu_selection == "💼 Správa účtů":
                         st.error("Účet s tímto názvem již existuje!")
 
     st.markdown("---")
-    st.subheader("📊 Seznam účtů a úprava základů")
+    st.subheader("📊 Seznam účtů, úprava základů a mazání")
     
     conn = get_db_connection()
     accounts_summary_query = '''
@@ -1114,4 +1136,20 @@ elif menu_selection == "💼 Správa účtů":
                         conn_up.close()
                         st.success(f"Základ pro účet '{acc_name}' byl aktualizován!")
                         st.rerun()
+
+                # Tlačítko pro smazání účtu mimo formulář
+                if st.button(f"🗑️ Smazat účet '{acc_name}' včetně všech jeho obchodů", key=f"del_acc_{acc_id}"):
+                    conn_del = get_db_connection()
+                    cursor_del = conn_del.cursor()
+                    # Nejprve smažeme obrázky spojené s obchody daného účtu
+                    cursor_del.execute("DELETE FROM trade_images WHERE trade_id IN (SELECT id FROM trades WHERE account_id = %s)", (acc_id,))
+                    # Pak smažeme obchody účtu
+                    cursor_del.execute("DELETE FROM trades WHERE account_id = %s", (acc_id,))
+                    # Nakonec smažeme samotný účet
+                    cursor_del.execute("DELETE FROM accounts WHERE id = %s", (acc_id,))
+                    conn_del.commit()
+                    conn_del.close()
+                    st.success(f"Účet '{acc_name}' byl úspěšně smazán!")
+                    st.rerun()
+
                 st.markdown("---")
