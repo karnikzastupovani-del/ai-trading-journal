@@ -4,3 +4,4 @@ pandas
 pillow
 plotly
 psycopg2-binary
+sqlalchemy
