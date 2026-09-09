@@ -36,7 +36,8 @@ except Exception:
 
 if API_KEY:
     genai.configure(api_key=API_KEY)
-    model = genai.GenerativeModel('models/gemini-1.5-flash')
+    # Opraveno na aktuálně podporovaný model gemini-2.5-flash
+    model = genai.GenerativeModel('gemini-2.5-flash')
 else:
     model = None
 
@@ -102,7 +103,7 @@ if menu_selection == "➕ Nový obchod (Vstup)":
             st.info(f"🛡️ **Riskovaná částka:** `{get_sym(calc_curr)}{risk_amt:,.2f}` | 📉 **Doporučená velikost pozice:** `{calc_lots:.2f} Lotů`")
     
     st.markdown("---")
-    st.write(" Nahraj screenshoty grafu a zadej parametry svého **vstupu do obchodu**.")
+    st.write("Nahraj screenshoty grafu a zadej parametry svého **vstupu do obchodu**.")
     
     conn = get_db_connection()
     accounts_df = pd.read_sql_query("SELECT id, name, initial_balance, COALESCE(currency, 'USD') as currency FROM accounts", conn)
