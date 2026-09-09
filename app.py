@@ -36,8 +36,8 @@ except Exception:
 
 if API_KEY:
     genai.configure(api_key=API_KEY)
-    # Opraveno na aktuálně podporovaný model gemini-2.5-flash
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    # Opraveno na aktuální model gemini-3.6-flash podle chybové hlášky
+    model = genai.GenerativeModel('gemini-3.6-flash')
 else:
     model = None
 
