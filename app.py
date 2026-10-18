@@ -3,7 +3,7 @@ import google.generativeai as genai
 import json
 from PIL import Image
 import psycopg2
-from datetime import datetime, date
+from datetime import datetime, date, time
 import pandas as pd
 import io
 import calendar
@@ -162,13 +162,13 @@ if menu_selection == "➕ Nový obchod (Vstup)":
         data = st.session_state.ai_data if "ai_data" in st.session_state and st.session_state.ai_data else {}
         
         if prague_tz:
-            cur_h = datetime.now(prague_tz).hour
+            cur_datetime = datetime.now(prague_tz)
         else:
-            cur_h = datetime.now().hour
+            cur_datetime = datetime.now()
             
-        if 8 <= cur_h < 13: def_sess = "Londýn (Evropa)"
-        elif 13 <= cur_h < 17: def_sess = "Londýn + New York (Překryv)"
-        elif 17 <= cur_h < 22: def_sess = "New York (USA)"
+        if 8 <= cur_datetime.hour < 13: def_sess = "Londýn (Evropa)"
+        elif 13 <= cur_datetime.hour < 17: def_sess = "Londýn + New York (Překryv)"
+        elif 17 <= cur_datetime.hour < 22: def_sess = "New York (USA)"
         else: def_sess = "Asie / Sydney"
         
         sess_opts = ["Asie / Sydney", "Londýn (Evropa)", "Londýn + New York (Překryv)", "New York (USA)", "Mimo hlavní (Chop)"]
@@ -185,8 +185,14 @@ if menu_selection == "➕ Nový obchod (Vstup)":
             with c1:
                 ticker = st.text_input("Ticker / Pár", value="GBP/JPY")
                 direction = st.selectbox("Směr", ["Long", "Short"])
+                
+                # PŘIDÁNO: Výběr vlastního data a času
+                st.markdown("🕒 **Čas vstupu (pro zpětné doložení):**")
+                entry_date = st.date_input("Datum", value=cur_datetime.date())
+                entry_time_input = st.time_input("Čas", value=cur_datetime.time())
+                
             with c2:
-                risk_input = st.number_input("Riskovaná částka (v peněžích)", value=-2000.0, step=100.0)
+                risk_input = st.number_input("Riskovaná částka (v penězích)", value=-2000.0, step=100.0)
                 lots_input = st.number_input("Celková velikost pozice (Loty)", value=15.0, step=0.1)
             with c3:
                 curr_list = ["USD", "EUR", "CZK"]
@@ -216,6 +222,9 @@ if menu_selection == "➕ Nový obchod (Vstup)":
             submit_entry = st.form_submit_button(label="🚀 Otevřít obchod (Uložit pro následné řízení)")
             
             if submit_entry:
+                # Spojení zvoleného data a času do jednoho stringu pro databázi
+                final_entry_time = datetime.combine(entry_date, entry_time_input).strftime("%Y-%m-%d %H:%M")
+                
                 conn = get_db_connection()
                 cursor = conn.cursor()
                 
@@ -229,7 +238,7 @@ if menu_selection == "➕ Nový obchod (Vstup)":
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                 ''', (
-                    selected_acc_id, ticker, direction, datetime.now().strftime("%Y-%m-%d %H:%M"), 
+                    selected_acc_id, ticker, direction, final_entry_time, 
                     0.0, 0.0,
                     step1_mb1, step2_liq, step3_fan, step4_mb2, 
                     "Double MB", notes, psycopg2.Binary(prepared_images[0][0]), inverted_chart_check, 
@@ -299,7 +308,6 @@ elif menu_selection == "⚙️ Řízení & Historie":
             rem_lots = t_init_lots - t_closed_lots
             sym = get_sym(t_curr)
             
-            # Odstraněno číslo obchodu, použit čistý čas a parametry
             header = f"🟡 [{clean_acc_name}] | {t_time} | {t_ticker} ({t_dir}) | Zbývá: {rem_lots:g} z {t_init_lots:g} Lotů | Zajištěno: {sym}{t_part_pnl:+,.2f}"
             
             with st.expander(header):
@@ -477,7 +485,6 @@ elif menu_selection == "⚙️ Řízení & Historie":
             sym = get_sym(t_curr)
             
             badge = "🟢" if total_trade_pnl >= 0 else "🔴"
-            # Odstraněno číslo obchodu z historie
             header = f"{badge} [{clean_acc_name}] | {t_time} | {t_ticker} ({t_dir}) | Celkový PnL: {sym}{total_trade_pnl:+,.2f} ({trade_pct:+.2f}%) | {t_r} R"
             
             with st.expander(header):
@@ -621,7 +628,6 @@ elif menu_selection == "📊 Dashboard & Kalendář":
             best_trade = closed_dash_trades['total_trade_pnl'].max() if not closed_dash_trades.empty else 0.0
             worst_trade = closed_dash_trades['total_trade_pnl'].min() if not closed_dash_trades.empty else 0.0
             
-            # Výpočet Profit Factoru
             gross_profit = winning_trades['total_trade_pnl'].sum() if not winning_trades.empty else 0.0
             gross_loss = abs(losing_trades['total_trade_pnl'].sum()) if not losing_trades.empty else 0.0
             profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0)
@@ -683,7 +689,6 @@ elif menu_selection == "📊 Dashboard & Kalendář":
         graph_c1, graph_c2 = st.columns(2)
         
         with graph_c1:
-            # Výpočet orientačního Zella Score (0-100)
             norm_wr = min(win_rate, 100)
             norm_pf = min(profit_factor * 25, 100)
             zella_score = (norm_wr * 0.5) + (norm_pf * 0.5)
@@ -1052,7 +1057,7 @@ elif menu_selection == "🌍 Ekonomický kalendář":
 
 
 # ==========================================
-# SEKCE 5: Správa účtů (S PŘIDANÝM MAZÁNÍM)
+# SEKCE 5: Správa účtů
 # ==========================================
 elif menu_selection == "💼 Správa účtů":
     st.subheader("💼 Správa obchodních účtů")
@@ -1137,15 +1142,11 @@ elif menu_selection == "💼 Správa účtů":
                         st.success(f"Základ pro účet '{acc_name}' byl aktualizován!")
                         st.rerun()
 
-                # Tlačítko pro smazání účtu mimo formulář
                 if st.button(f"🗑️ Smazat účet '{acc_name}' včetně všech jeho obchodů", key=f"del_acc_{acc_id}"):
                     conn_del = get_db_connection()
                     cursor_del = conn_del.cursor()
-                    # Nejprve smažeme obrázky spojené s obchody daného účtu
                     cursor_del.execute("DELETE FROM trade_images WHERE trade_id IN (SELECT id FROM trades WHERE account_id = %s)", (acc_id,))
-                    # Pak smažeme obchody účtu
                     cursor_del.execute("DELETE FROM trades WHERE account_id = %s", (acc_id,))
-                    # Nakonec smažeme samotný účet
                     cursor_del.execute("DELETE FROM accounts WHERE id = %s", (acc_id,))
                     conn_del.commit()
                     conn_del.close()
